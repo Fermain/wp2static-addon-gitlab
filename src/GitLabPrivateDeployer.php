@@ -236,6 +236,9 @@ class GitLabPrivateDeployer {
             WsLog::l( 'No files to deploy' );
             return;
         }
+        
+        // Additional debugging for blank commit issue
+        $this->verboseLog( 'Sample files to deploy: ' . wp_json_encode( array_slice( $files, 0, 2 ) ) );
 
         $this->deployFiles( $files );
         
@@ -375,8 +378,15 @@ class GitLabPrivateDeployer {
                 // Use consistent path format for cache check
                 $cache_path = '/' . ltrim( $relative_path, '/' );
                 
-                if ( ! $this->shouldDeployFile( $local_path, $cache_path ) ) {
-                    continue;
+                // TEMPORARY: Skip cache check for debugging blank commits
+                // if ( ! $this->shouldDeployFile( $local_path, $cache_path ) ) {
+                //     continue;
+                // }
+                
+                // Still log cache status for debugging
+                $is_cached = DeployCache::fileisCached( $cache_path, 'wp2static-gitlab-private' );
+                if ( count( $files ) < 3 ) {
+                    $this->verboseLog( "DEBUG: File $cache_path cache status: " . ( $is_cached ? 'cached' : 'not cached' ) );
                 }
                 
                 $files[] = [
