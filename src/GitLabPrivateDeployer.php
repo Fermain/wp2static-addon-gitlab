@@ -645,9 +645,16 @@ class GitLabPrivateDeployer {
 
         WsLog::l( "Deploying " . count( $actions ) . " files to GitLab ($action)" );
         
-        // Debug logging to identify blank commit issue
+        // Debug logging to identify blank commit issue (without massive base64 content)
         if ( ! empty( $actions ) ) {
-            $this->verboseLog( "Sample action for debugging: " . wp_json_encode( array_slice( $actions, 0, 1 ) ) );
+            $sample_action = $actions[0];
+            $debug_action = [
+                'action' => $sample_action['action'],
+                'file_path' => $sample_action['file_path'],
+                'content_length' => strlen( $sample_action['content'] ?? '' ),
+                'encoding' => $sample_action['encoding'] ?? 'none'
+            ];
+            $this->verboseLog( "Sample action for debugging: " . wp_json_encode( $debug_action ) );
         } else {
             WsLog::l( "ERROR: Actions array is empty despite having files!" );
         }
@@ -846,12 +853,18 @@ class GitLabPrivateDeployer {
         
         // Debug payload structure
         $action_count = isset( $payload['actions'] ) ? count( $payload['actions'] ) : 0;
-        $payload_size = strlen( wp_json_encode( $payload ) );
-        $this->verboseLog( "API payload: $action_count actions, payload size: " . size_format( $payload_size ) );
+        $total_content_size = 0;
+        if ( isset( $payload['actions'] ) ) {
+            foreach ( $payload['actions'] as $action ) {
+                $total_content_size += strlen( $action['content'] ?? '' );
+            }
+        }
+        $this->verboseLog( "API payload: $action_count actions, total content size: " . size_format( $total_content_size ) );
         
         if ( $action_count > 0 && isset( $payload['actions'][0] ) ) {
             $first_action = $payload['actions'][0];
-            $this->verboseLog( "First action: {$first_action['action']} - {$first_action['file_path']} - content length: " . strlen( $first_action['content'] ?? '' ) );
+            $content_length = isset( $first_action['content'] ) ? strlen( $first_action['content'] ) : 0;
+            $this->verboseLog( "First action: {$first_action['action']} - {$first_action['file_path']} - content length: $content_length chars" );
         }
         
         $json_body = wp_json_encode( $payload );
