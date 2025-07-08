@@ -351,26 +351,62 @@ class GitLabPrivateDeployer {
             )
         );
 
-                            foreach ( $iterator as $file ) {
+        // Normalize the processed site path
+        $normalized_path = rtrim( $processed_site_path, '/' ) . '/';
+        
+        foreach ( $iterator as $file ) {
             if ( $file->isFile() ) {
-                $relative_path = str_replace( rtrim( $processed_site_path, '/' ) . '/', '', $file->getPathname() );
+                $local_path = $file->getPathname();
                 
-                if ( ! $this->shouldDeployFile( $file->getPathname(), '/' . $relative_path ) ) {
+                // Get relative path more reliably
+                if ( strpos( $local_path, $normalized_path ) === 0 ) {
+                    $relative_path = substr( $local_path, strlen( $normalized_path ) );
+                } else {
+                    // Fallback method
+                    $relative_path = str_replace( $normalized_path, '', $local_path );
+                }
+                
+                // Skip empty paths
+                if ( empty( $relative_path ) ) {
+                    WsLog::l( "Skipping file with empty relative path: $local_path" );
+                    continue;
+                }
+                
+                // Use consistent path format for cache check
+                $cache_path = '/' . ltrim( $relative_path, '/' );
+                
+                if ( ! $this->shouldDeployFile( $local_path, $cache_path ) ) {
                     continue;
                 }
                 
                 $files[] = [
-                    'local_path' => $file->getPathname(),
+                    'local_path' => $local_path,
                     'remote_path' => $relative_path,
                 ];
+                
+                // Debug first few files
+                if ( count( $files ) <= 3 ) {
+                    $this->verboseLog( "File " . count( $files ) . " - Local: $local_path, Remote: $relative_path" );
+                }
             }
         }
 
+        WsLog::l( "Found " . count( $files ) . " files to deploy from: $processed_site_path" );
         return $files;
     }
 
     private function shouldDeployFile( string $local_path, string $remote_path ) : bool {
-        return ! DeployCache::fileisCached( $remote_path, 'wp2static-gitlab-private' );
+        $is_cached = DeployCache::fileisCached( $remote_path, 'wp2static-gitlab-private' );
+        $should_deploy = ! $is_cached;
+        
+        // Debug cache behavior for first few files
+        static $debug_count = 0;
+        if ( $debug_count < 5 ) {
+            $this->verboseLog( "Cache check - $remote_path: " . ( $is_cached ? 'cached (skip)' : 'not cached (deploy)' ) );
+            $debug_count++;
+        }
+        
+        return $should_deploy;
     }
 
     private function deployFiles( array $files ) : void {
@@ -543,16 +579,26 @@ class GitLabPrivateDeployer {
 
     private function attemptCommit( array $files, string $gitlab_url, string $project_id, string $access_token, string $branch, string $commit_message, string $author_name, string $author_email, string $action ) : bool {
         $actions = [];
+        $skipped_files = 0;
         
         foreach ( $files as $file ) {
             if ( ! file_exists( $file['local_path'] ) ) {
                 WsLog::l( "File does not exist: " . $file['local_path'] );
+                $skipped_files++;
                 continue;
             }
             
             $content = file_get_contents( $file['local_path'] );
             if ( $content === false ) {
                 WsLog::l( "Failed to read file: " . $file['local_path'] );
+                $skipped_files++;
+                continue;
+            }
+
+            // Additional validation
+            if ( empty( $file['remote_path'] ) ) {
+                WsLog::l( "Empty remote path for file: " . $file['local_path'] );
+                $skipped_files++;
                 continue;
             }
 
@@ -562,6 +608,15 @@ class GitLabPrivateDeployer {
                 'content' => base64_encode( $content ),
                 'encoding' => 'base64',
             ];
+            
+            // Debug first file in batch
+            if ( count( $actions ) === 1 ) {
+                $this->verboseLog( "First file - Local: {$file['local_path']}, Remote: {$file['remote_path']}, Size: " . strlen( $content ) . " bytes" );
+            }
+        }
+        
+        if ( $skipped_files > 0 ) {
+            WsLog::l( "Skipped $skipped_files files due to errors" );
         }
 
         if ( empty( $actions ) ) {
@@ -579,6 +634,13 @@ class GitLabPrivateDeployer {
         ];
 
         WsLog::l( "Deploying " . count( $actions ) . " files to GitLab ($action)" );
+        
+        // Debug logging to identify blank commit issue
+        if ( ! empty( $actions ) ) {
+            $this->verboseLog( "Sample action for debugging: " . wp_json_encode( array_slice( $actions, 0, 1 ) ) );
+        } else {
+            WsLog::l( "ERROR: Actions array is empty despite having files!" );
+        }
         
         $response = $this->makeApiRequest( $api_url, $payload, $access_token );
         
@@ -772,13 +834,29 @@ class GitLabPrivateDeployer {
         $api_timeout = get_option( 'wp2static_gitlab_private_api_timeout', 120 );
         $start_time = microtime( true );
         
+        // Debug payload structure
+        $action_count = isset( $payload['actions'] ) ? count( $payload['actions'] ) : 0;
+        $payload_size = strlen( wp_json_encode( $payload ) );
+        $this->verboseLog( "API payload: $action_count actions, payload size: " . size_format( $payload_size ) );
+        
+        if ( $action_count > 0 && isset( $payload['actions'][0] ) ) {
+            $first_action = $payload['actions'][0];
+            $this->verboseLog( "First action: {$first_action['action']} - {$first_action['file_path']} - content length: " . strlen( $first_action['content'] ?? '' ) );
+        }
+        
+        $json_body = wp_json_encode( $payload );
+        if ( json_last_error() !== JSON_ERROR_NONE ) {
+            WsLog::l( 'JSON encoding error: ' . json_last_error_msg() );
+            return false;
+        }
+        
         $args = [
             'method' => 'POST',
             'headers' => [
                 'Content-Type' => 'application/json',
                 'Authorization' => 'Bearer ' . $access_token,
             ],
-            'body' => wp_json_encode( $payload ),
+            'body' => $json_body,
             'timeout' => $api_timeout,
         ];
 
