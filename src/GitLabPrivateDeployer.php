@@ -43,6 +43,14 @@ class GitLabPrivateDeployer {
             'gitlabAuthorEmail' => get_option( 'wp2static_gitlab_private_author_email', 'noreply@wp2static.com' ),
             'gitlabDeleteOrphanedFiles' => get_option( 'wp2static_gitlab_private_delete_orphaned_files', false ),
             'gitlabVerboseLogging' => get_option( 'wp2static_gitlab_private_verbose_logging', false ),
+            
+            // Timeout and performance options
+            'gitlabApiTimeout' => get_option( 'wp2static_gitlab_private_api_timeout', 120 ),
+            'gitlabConnectionTimeout' => get_option( 'wp2static_gitlab_private_connection_timeout', 30 ),
+            'gitlabBatchSize' => get_option( 'wp2static_gitlab_private_batch_size', 20 ),
+            'gitlabLargeFileThreshold' => get_option( 'wp2static_gitlab_private_large_file_threshold', 1048576 ),
+            'gitlabAdaptiveBatching' => get_option( 'wp2static_gitlab_private_adaptive_batching', true ),
+            'gitlabRetryAttempts' => get_option( 'wp2static_gitlab_private_retry_attempts', 3 ),
         ];
         
         include WP2STATIC_GITLAB_PRIVATE_PATH . 'views/options-page.php';
@@ -65,6 +73,14 @@ class GitLabPrivateDeployer {
         update_option( 'wp2static_gitlab_private_author_email', sanitize_email( $_POST['gitlabAuthorEmail'] ?? '' ) );
         update_option( 'wp2static_gitlab_private_delete_orphaned_files', isset( $_POST['gitlabDeleteOrphanedFiles'] ) ? true : false );
         update_option( 'wp2static_gitlab_private_verbose_logging', isset( $_POST['gitlabVerboseLogging'] ) ? true : false );
+        
+        // Save timeout and performance options
+        update_option( 'wp2static_gitlab_private_api_timeout', max( 30, intval( $_POST['gitlabApiTimeout'] ?? 120 ) ) );
+        update_option( 'wp2static_gitlab_private_connection_timeout', max( 10, intval( $_POST['gitlabConnectionTimeout'] ?? 30 ) ) );
+        update_option( 'wp2static_gitlab_private_batch_size', max( 1, min( 100, intval( $_POST['gitlabBatchSize'] ?? 20 ) ) ) );
+        update_option( 'wp2static_gitlab_private_large_file_threshold', max( 102400, intval( $_POST['gitlabLargeFileThreshold'] ?? 1048576 ) ) ); // Min 100KB
+        update_option( 'wp2static_gitlab_private_adaptive_batching', isset( $_POST['gitlabAdaptiveBatching'] ) ? true : false );
+        update_option( 'wp2static_gitlab_private_retry_attempts', max( 1, min( 10, intval( $_POST['gitlabRetryAttempts'] ?? 3 ) ) ) );
         
         wp_redirect( 
             add_query_arg( 
@@ -96,11 +112,13 @@ class GitLabPrivateDeployer {
 
             $api_url = $gitlab_url . '/api/v4/projects/' . urlencode( $project_id );
             
+            $connection_timeout = get_option( 'wp2static_gitlab_private_connection_timeout', 30 );
+            
             $args = [
                 'headers' => [
                     'Authorization' => 'Bearer ' . $access_token,
                 ],
-                'timeout' => 30,
+                'timeout' => $connection_timeout,
             ];
 
             $response = wp_remote_get( $api_url, $args );
@@ -165,6 +183,7 @@ class GitLabPrivateDeployer {
             WsLog::l( 'GitLab Private deployment started' );
             
             $this->validateConfiguration();
+            $this->logDeploymentSettings();
             
                     $files = $this->getFilesToDeploy( $processed_site_path );
         WsLog::l( 'Found ' . count( $files ) . ' files to deploy' );
@@ -205,6 +224,25 @@ class GitLabPrivateDeployer {
         $this->verboseLog( 'GitLab Private configuration validated successfully' );
     }
 
+    private function logDeploymentSettings() : void {
+        $settings = [
+            'API Timeout' => get_option( 'wp2static_gitlab_private_api_timeout', 120 ) . 's',
+            'Connection Timeout' => get_option( 'wp2static_gitlab_private_connection_timeout', 30 ) . 's',
+            'Batch Size' => get_option( 'wp2static_gitlab_private_batch_size', 20 ),
+            'Large File Threshold' => size_format( get_option( 'wp2static_gitlab_private_large_file_threshold', 1048576 ) ),
+            'Adaptive Batching' => get_option( 'wp2static_gitlab_private_adaptive_batching', true ) ? 'Enabled' : 'Disabled',
+            'Retry Attempts' => get_option( 'wp2static_gitlab_private_retry_attempts', 3 ),
+        ];
+        
+        $settings_log = 'Deployment settings: ';
+        foreach ( $settings as $key => $value ) {
+            $settings_log .= "$key: $value, ";
+        }
+        $settings_log = rtrim( $settings_log, ', ' );
+        
+        $this->verboseLog( $settings_log );
+    }
+
     private function getFilesToDeploy( string $processed_site_path ) : array {
         $files = [];
         $iterator = new \RecursiveIteratorIterator(
@@ -237,20 +275,131 @@ class GitLabPrivateDeployer {
     }
 
     private function deployFiles( array $files ) : void {
-        $batch_size = 20;
-        $batches = array_chunk( $files, $batch_size );
+        $base_batch_size = get_option( 'wp2static_gitlab_private_batch_size', 20 );
+        $large_file_threshold = get_option( 'wp2static_gitlab_private_large_file_threshold', 1048576 );
+        $adaptive_batching = get_option( 'wp2static_gitlab_private_adaptive_batching', true );
+        
+        if ( $adaptive_batching ) {
+            $batches = $this->createAdaptiveBatches( $files, $base_batch_size, $large_file_threshold );
+        } else {
+            $batches = array_chunk( $files, $base_batch_size );
+        }
+        
+        $total_batches = count( $batches );
+        $successful_batches = 0;
+        $start_time = time();
         
         foreach ( $batches as $batch_index => $batch ) {
-            WsLog::l( "Deploying batch " . ( $batch_index + 1 ) . " of " . count( $batches ) );
-            $this->deployFileBatch( $batch );
+            $batch_start_time = microtime( true );
             
-            if ( $batch_index < count( $batches ) - 1 ) {
+            WsLog::l( "Deploying batch " . ( $batch_index + 1 ) . " of $total_batches (" . count( $batch ) . " files)" );
+            
+            $success = $this->deployFileBatchWithRetry( $batch );
+            
+            if ( $success ) {
+                $successful_batches++;
+                $batch_duration = microtime( true ) - $batch_start_time;
+                $this->verboseLog( sprintf( 'Batch %d completed in %.2f seconds', $batch_index + 1, $batch_duration ) );
+            } else {
+                $detailed_error = "Failed to deploy batch " . ( $batch_index + 1 ) . " after all retry attempts.\n\n";
+                $detailed_error .= "Troubleshooting suggestions:\n";
+                $detailed_error .= "1. Check your network connection and GitLab service status\n";
+                $detailed_error .= "2. Increase API timeout (currently: " . get_option( 'wp2static_gitlab_private_api_timeout', 120 ) . "s)\n";
+                $detailed_error .= "3. Reduce batch size (currently: " . get_option( 'wp2static_gitlab_private_batch_size', 20 ) . " files)\n";
+                $detailed_error .= "4. Clear the Deploy Cache in WP2Static → Caches\n";
+                $detailed_error .= "5. Try using a different branch name\n";
+                
+                WsLog::l( $detailed_error );
+                throw new \Exception( "Deployment failed on batch " . ( $batch_index + 1 ) . " - check logs for details" );
+            }
+            
+            // Add delay between batches to avoid rate limiting
+            if ( $batch_index < $total_batches - 1 ) {
                 sleep( 1 );
             }
         }
+        
+        $total_duration = time() - $start_time;
+        WsLog::l( "Deployment completed: $successful_batches/$total_batches batches successful in {$total_duration}s" );
     }
 
-    private function deployFileBatch( array $files ) : void {
+    private function createAdaptiveBatches( array $files, int $base_batch_size, int $large_file_threshold ) : array {
+        $batches = [];
+        $current_batch = [];
+        $current_batch_size = 0;
+        $current_total_size = 0;
+        
+        foreach ( $files as $file ) {
+            $file_size = file_exists( $file['local_path'] ) ? filesize( $file['local_path'] ) : 0;
+            
+            // Determine batch size for this file
+            $target_batch_size = $base_batch_size;
+            if ( $file_size > $large_file_threshold ) {
+                // Reduce batch size for large files
+                $target_batch_size = max( 1, intval( $base_batch_size / 4 ) );
+                $this->verboseLog( "Large file detected ({$file['remote_path']}: " . size_format( $file_size ) . "), using smaller batch size: $target_batch_size" );
+            }
+            
+            // Check if we should start a new batch
+            $should_start_new_batch = false;
+            
+            if ( $current_batch_size >= $target_batch_size ) {
+                $should_start_new_batch = true;
+            } elseif ( $file_size > $large_file_threshold && $current_batch_size > 0 ) {
+                // Start new batch for large files to avoid mixing with small files
+                $should_start_new_batch = true;
+            } elseif ( $current_total_size + $file_size > $large_file_threshold * 2 ) {
+                // Start new batch if total size would be too large
+                $should_start_new_batch = true;
+            }
+            
+            if ( $should_start_new_batch && ! empty( $current_batch ) ) {
+                $batches[] = $current_batch;
+                $current_batch = [];
+                $current_batch_size = 0;
+                $current_total_size = 0;
+            }
+            
+            $current_batch[] = $file;
+            $current_batch_size++;
+            $current_total_size += $file_size;
+        }
+        
+        // Add the final batch if not empty
+        if ( ! empty( $current_batch ) ) {
+            $batches[] = $current_batch;
+        }
+        
+        $this->verboseLog( "Created " . count( $batches ) . " adaptive batches from " . count( $files ) . " files" );
+        return $batches;
+    }
+
+    private function deployFileBatchWithRetry( array $files ) : bool {
+        $retry_attempts = get_option( 'wp2static_gitlab_private_retry_attempts', 3 );
+        
+        for ( $attempt = 1; $attempt <= $retry_attempts; $attempt++ ) {
+            $success = $this->deployFileBatch( $files );
+            
+            if ( $success ) {
+                if ( $attempt > 1 ) {
+                    WsLog::l( "Batch deployment succeeded on attempt $attempt" );
+                }
+                return true;
+            }
+            
+            if ( $attempt < $retry_attempts ) {
+                $delay = min( pow( 2, $attempt - 1 ), 10 ); // Exponential backoff, max 10 seconds
+                WsLog::l( "Batch deployment failed on attempt $attempt, retrying in {$delay}s..." );
+                sleep( $delay );
+            } else {
+                WsLog::l( "Batch deployment failed after $retry_attempts attempts" );
+            }
+        }
+        
+        return false;
+    }
+
+    private function deployFileBatch( array $files ) : bool {
         $gitlab_url = get_option( 'wp2static_gitlab_private_url' );
         $project_id = get_option( 'wp2static_gitlab_private_project_id' );
         $access_token = get_option( 'wp2static_gitlab_private_access_token' );
@@ -271,15 +420,10 @@ class GitLabPrivateDeployer {
             foreach ( $files as $file ) {
                 DeployCache::addFile( $file['remote_path'], 'wp2static-gitlab-private' );
             }
+            return true;
         } else {
-            $detailed_error = "Failed to deploy files to GitLab.\n\n";
-            $detailed_error .= "Possible solutions:\n";
-            $detailed_error .= "1. Clear the Deploy Cache in WP2Static → Caches\n";
-            $detailed_error .= "2. Try deleting the target branch '$branch' and let it be recreated\n";
-            $detailed_error .= "3. Use a different branch name (e.g., 'wp2static-deploy')\n";
-            
-            WsLog::l( $detailed_error );
-            throw new \Exception( "Failed to deploy files to GitLab - try clearing deploy cache" );
+            $this->verboseLog( "Batch deployment failed - will retry if attempts remaining" );
+            return false;
         }
     }
 
@@ -387,12 +531,14 @@ class GitLabPrivateDeployer {
     private function getExistingFiles( string $gitlab_url, string $project_id, string $access_token, string $branch ) : array {
         $api_url = $gitlab_url . '/api/v4/projects/' . urlencode( $project_id ) . '/repository/tree';
         
+        $connection_timeout = get_option( 'wp2static_gitlab_private_connection_timeout', 30 );
+        
         $args = [
             'method' => 'GET',
             'headers' => [
                 'Authorization' => 'Bearer ' . $access_token,
             ],
-            'timeout' => 30,
+            'timeout' => $connection_timeout,
         ];
 
         $response = wp_remote_request( $api_url . '?ref=' . urlencode( $branch ) . '&recursive=true&per_page=100', $args );
@@ -499,6 +645,9 @@ class GitLabPrivateDeployer {
     }
 
     private function makeApiRequest( string $url, array $payload, string $access_token ) {
+        $api_timeout = get_option( 'wp2static_gitlab_private_api_timeout', 120 );
+        $start_time = microtime( true );
+        
         $args = [
             'method' => 'POST',
             'headers' => [
@@ -506,20 +655,38 @@ class GitLabPrivateDeployer {
                 'Authorization' => 'Bearer ' . $access_token,
             ],
             'body' => wp_json_encode( $payload ),
-            'timeout' => 60,
+            'timeout' => $api_timeout,
         ];
 
         $response = wp_remote_request( $url, $args );
+        $request_duration = microtime( true ) - $start_time;
 
         if ( is_wp_error( $response ) ) {
-            WsLog::l( 'GitLab API request failed: ' . $response->get_error_message() );
+            $error_message = $response->get_error_message();
+            WsLog::l( sprintf( 'GitLab API request failed after %.2fs: %s', $request_duration, $error_message ) );
+            
+            // Check for timeout-specific errors
+            if ( strpos( $error_message, 'timeout' ) !== false || strpos( $error_message, 'timed out' ) !== false ) {
+                WsLog::l( 'Request timed out - consider increasing API timeout or reducing batch size' );
+            }
+            
             return false;
         }
 
         $response_code = wp_remote_retrieve_response_code( $response );
         $response_body = wp_remote_retrieve_body( $response );
 
+        // Performance monitoring
+        $file_count = isset( $payload['actions'] ) ? count( $payload['actions'] ) : 1;
+        $this->verboseLog( sprintf( 'API request completed in %.2fs (%d files, %.2fs per file)', 
+            $request_duration, $file_count, $request_duration / max( 1, $file_count ) ) );
+
         if ( $response_code >= 200 && $response_code < 300 ) {
+            // Log slow requests for performance analysis
+            if ( $request_duration > 30 ) {
+                WsLog::l( sprintf( 'Slow API request detected: %.2fs for %d files - consider reducing batch size', 
+                    $request_duration, $file_count ) );
+            }
             return json_decode( $response_body, true );
         } else {
             $error_msg = "GitLab API error (HTTP $response_code): $response_body";
@@ -528,6 +695,10 @@ class GitLabPrivateDeployer {
             // Handle specific GitLab API errors  
             if ( $response_code === 400 && strpos( $response_body, 'file with this name already exists' ) !== false ) {
                 WsLog::l( "File exists error - retrying with different strategy" );
+            } elseif ( $response_code === 413 ) {
+                WsLog::l( "Request too large (413) - try reducing batch size or large file threshold" );
+            } elseif ( $response_code === 502 || $response_code === 503 || $response_code === 504 ) {
+                WsLog::l( "Server error ($response_code) - GitLab may be experiencing issues, will retry" );
             }
             
             return false;

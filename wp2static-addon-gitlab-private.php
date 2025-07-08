@@ -57,6 +57,14 @@ register_activation_hook( __FILE__, function() {
     add_option( 'wp2static_gitlab_private_author_email', 'noreply@wp2static.com' );
     add_option( 'wp2static_gitlab_private_delete_orphaned_files', false );
     add_option( 'wp2static_gitlab_private_verbose_logging', false );
+    
+    // Timeout and performance options
+    add_option( 'wp2static_gitlab_private_api_timeout', 120 );
+    add_option( 'wp2static_gitlab_private_connection_timeout', 30 );
+    add_option( 'wp2static_gitlab_private_batch_size', 20 );
+    add_option( 'wp2static_gitlab_private_large_file_threshold', 1048576 ); // 1MB in bytes
+    add_option( 'wp2static_gitlab_private_adaptive_batching', true );
+    add_option( 'wp2static_gitlab_private_retry_attempts', 3 );
 } );
 
 // Deactivation hook

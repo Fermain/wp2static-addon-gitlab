@@ -224,6 +224,134 @@ if ( isset( $_GET['test_result'] ) && isset( $_GET['test_message'] ) ) {
             </tbody>
         </table>
         
+        <h2>Performance & Timeout Settings</h2>
+        <p>Configure timeouts and batch sizes to optimize for your network conditions.</p>
+        
+        <table class="form-table">
+            <tbody>
+                <tr>
+                    <th scope="row">
+                        <label for="gitlabApiTimeout">API Request Timeout</label>
+                    </th>
+                    <td>
+                        <input 
+                            type="number" 
+                            name="gitlabApiTimeout" 
+                            id="gitlabApiTimeout" 
+                            value="<?php echo esc_attr( $options['gitlabApiTimeout'] ); ?>" 
+                            class="small-text"
+                            min="30"
+                            max="600"
+                        /> seconds
+                        <p class="description">
+                            Timeout for GitLab API requests (30-600 seconds). Increase for slower networks. Default: 120 seconds.
+                        </p>
+                    </td>
+                </tr>
+                
+                <tr>
+                    <th scope="row">
+                        <label for="gitlabConnectionTimeout">Connection Test Timeout</label>
+                    </th>
+                    <td>
+                        <input 
+                            type="number" 
+                            name="gitlabConnectionTimeout" 
+                            id="gitlabConnectionTimeout" 
+                            value="<?php echo esc_attr( $options['gitlabConnectionTimeout'] ); ?>" 
+                            class="small-text"
+                            min="10"
+                            max="120"
+                        /> seconds
+                        <p class="description">
+                            Timeout for connection tests (10-120 seconds). Default: 30 seconds.
+                        </p>
+                    </td>
+                </tr>
+                
+                <tr>
+                    <th scope="row">
+                        <label for="gitlabBatchSize">Batch Size</label>
+                    </th>
+                    <td>
+                        <input 
+                            type="number" 
+                            name="gitlabBatchSize" 
+                            id="gitlabBatchSize" 
+                            value="<?php echo esc_attr( $options['gitlabBatchSize'] ); ?>" 
+                            class="small-text"
+                            min="1"
+                            max="100"
+                        /> files per request
+                        <p class="description">
+                            Number of files to upload per GitLab API request (1-100). Smaller batches are more reliable but slower. Default: 20.
+                        </p>
+                    </td>
+                </tr>
+                
+                <tr>
+                    <th scope="row">
+                        <label for="gitlabLargeFileThreshold">Large File Threshold</label>
+                    </th>
+                    <td>
+                        <input 
+                            type="number" 
+                            name="gitlabLargeFileThreshold" 
+                            id="gitlabLargeFileThreshold" 
+                            value="<?php echo esc_attr( $options['gitlabLargeFileThreshold'] ); ?>" 
+                            class="regular-text"
+                            min="102400"
+                            step="102400"
+                        /> bytes
+                        <p class="description">
+                            Files larger than this size will be processed in smaller batches (minimum 100KB). Default: 1MB (1048576 bytes).
+                        </p>
+                    </td>
+                </tr>
+                
+                <tr>
+                    <th scope="row">
+                        <label for="gitlabAdaptiveBatching">Adaptive Batching</label>
+                    </th>
+                    <td>
+                        <label>
+                            <input 
+                                type="checkbox" 
+                                name="gitlabAdaptiveBatching" 
+                                id="gitlabAdaptiveBatching" 
+                                value="1"
+                                <?php checked( $options['gitlabAdaptiveBatching'] ); ?>
+                            />
+                            Automatically reduce batch sizes for large files and slow networks
+                        </label>
+                        <p class="description">
+                            When enabled, the plugin will automatically use smaller batch sizes when uploading large files or detecting slow network performance.
+                        </p>
+                    </td>
+                </tr>
+                
+                <tr>
+                    <th scope="row">
+                        <label for="gitlabRetryAttempts">Retry Attempts</label>
+                    </th>
+                    <td>
+                        <input 
+                            type="number" 
+                            name="gitlabRetryAttempts" 
+                            id="gitlabRetryAttempts" 
+                            value="<?php echo esc_attr( $options['gitlabRetryAttempts'] ); ?>" 
+                            class="small-text"
+                            min="1"
+                            max="10"
+                        /> attempts
+                        <p class="description">
+                            Number of times to retry failed requests (1-10). More retries increase reliability but take longer on persistent failures. Default: 3.
+                        </p>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        
         <?php submit_button( 'Save Settings' ); ?>
     </form>
     
