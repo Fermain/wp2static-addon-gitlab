@@ -510,6 +510,12 @@ class GitLabPrivateDeployer {
             $success = $this->attemptMixedCommit( $files, $gitlab_url, $project_id, $access_token, $branch, $commit_message, $author_name, $author_email );
         }
         
+        if ( ! $success ) {
+            // Final fallback: try with 'create' for all files (handles case where files don't exist)
+            $this->verboseLog( "Mixed strategy failed, trying create strategy as final fallback" );
+            $success = $this->attemptCommit( $files, $gitlab_url, $project_id, $access_token, $branch, $commit_message, $author_name, $author_email, 'create' );
+        }
+        
         if ( $success ) {
             foreach ( $files as $file ) {
                 DeployCache::addFile( $file['remote_path'], 'wp2static-gitlab-private' );
@@ -565,9 +571,10 @@ class GitLabPrivateDeployer {
         if ( $response ) {
             WsLog::l( "Successfully deployed " . count( $actions ) . " files to GitLab using '$action' action" );
             return true;
+        } else {
+            $this->verboseLog( "Failed to deploy files using '$action' action - response was false/empty" );
+            return false;
         }
-        
-        return false;
     }
 
     private function attemptMixedCommit( array $files, string $gitlab_url, string $project_id, string $access_token, string $branch, string $commit_message, string $author_name, string $author_email ) : bool {
@@ -637,8 +644,17 @@ class GitLabPrivateDeployer {
 
         $response = wp_remote_request( $api_url . '?ref=' . urlencode( $branch ) . '&recursive=true&per_page=100', $args );
 
-        if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) {
-            // Failed to get existing files list, assume all files are new (silent)
+        if ( is_wp_error( $response ) ) {
+            $this->verboseLog( 'Failed to get existing files: ' . $response->get_error_message() );
+            return [];
+        }
+        
+        $response_code = wp_remote_retrieve_response_code( $response );
+        if ( $response_code === 404 ) {
+            $this->verboseLog( "Branch '$branch' doesn't exist yet - assuming empty repository" );
+            return [];
+        } elseif ( $response_code !== 200 ) {
+            $this->verboseLog( "Failed to get existing files (HTTP $response_code) - assuming empty repository" );
             return [];
         }
 
@@ -787,8 +803,15 @@ class GitLabPrivateDeployer {
             WsLog::l( $error_msg );
             
             // Handle specific GitLab API errors  
-            if ( $response_code === 400 && strpos( $response_body, 'file with this name already exists' ) !== false ) {
-                WsLog::l( "File exists error - retrying with different strategy" );
+            if ( $response_code === 400 ) {
+                if ( strpos( $response_body, 'file with this name already exists' ) !== false ) {
+                    WsLog::l( "File exists error - retrying with different strategy" );
+                } elseif ( strpos( $response_body, "file with this name doesn't exist" ) !== false || 
+                          strpos( $response_body, 'file with this name does not exist' ) !== false ) {
+                    WsLog::l( "File doesn't exist error - retrying with create strategy" );
+                } else {
+                    WsLog::l( "Other 400 error - check request format or file paths" );
+                }
             } elseif ( $response_code === 413 ) {
                 WsLog::l( "Request too large (413) - try reducing batch size or large file threshold" );
             } elseif ( $response_code === 502 || $response_code === 503 || $response_code === 504 ) {
