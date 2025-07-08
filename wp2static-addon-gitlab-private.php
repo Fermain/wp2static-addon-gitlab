@@ -68,6 +68,7 @@ register_activation_hook( __FILE__, function() {
     add_option( 'wp2static_gitlab_private_adaptive_batching', true );
     add_option( 'wp2static_gitlab_private_retry_attempts', 3 );
     add_option( 'wp2static_gitlab_private_success_commit', true );
+    add_option( 'wp2static_gitlab_private_squash_commits', true );
 } );
 
 // Deactivation hook

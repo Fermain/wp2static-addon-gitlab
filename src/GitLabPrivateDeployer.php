@@ -52,6 +52,7 @@ class GitLabPrivateDeployer {
             'gitlabAdaptiveBatching' => get_option( 'wp2static_gitlab_private_adaptive_batching', true ),
             'gitlabRetryAttempts' => get_option( 'wp2static_gitlab_private_retry_attempts', 3 ),
             'gitlabSuccessCommit' => get_option( 'wp2static_gitlab_private_success_commit', true ),
+            'gitlabSquashCommits' => get_option( 'wp2static_gitlab_private_squash_commits', true ),
         ];
         
         // Calculate human-readable values for large file threshold (backwards compatibility)
@@ -123,6 +124,7 @@ class GitLabPrivateDeployer {
         update_option( 'wp2static_gitlab_private_adaptive_batching', isset( $_POST['gitlabAdaptiveBatching'] ) ? true : false );
         update_option( 'wp2static_gitlab_private_retry_attempts', max( 1, min( 10, intval( $_POST['gitlabRetryAttempts'] ?? 3 ) ) ) );
         update_option( 'wp2static_gitlab_private_success_commit', isset( $_POST['gitlabSuccessCommit'] ) ? true : false );
+        update_option( 'wp2static_gitlab_private_squash_commits', isset( $_POST['gitlabSquashCommits'] ) ? true : false );
         
         wp_redirect( 
             add_query_arg( 
@@ -281,6 +283,7 @@ class GitLabPrivateDeployer {
             'Adaptive Batching' => get_option( 'wp2static_gitlab_private_adaptive_batching', true ) ? 'Enabled' : 'Disabled',
             'Retry Attempts' => get_option( 'wp2static_gitlab_private_retry_attempts', 3 ),
             'Success Commit' => get_option( 'wp2static_gitlab_private_success_commit', true ) ? 'Enabled' : 'Disabled',
+            'Reduce Commits' => get_option( 'wp2static_gitlab_private_squash_commits', true ) ? 'Enabled' : 'Disabled',
         ];
         
         $settings_log = 'Deployment settings: ';
@@ -291,6 +294,8 @@ class GitLabPrivateDeployer {
         
         $this->verboseLog( $settings_log );
     }
+
+
 
     private function createSuccessCommit() : void {
         $success_commit_enabled = get_option( 'wp2static_gitlab_private_success_commit', true );
@@ -372,11 +377,20 @@ class GitLabPrivateDeployer {
         $base_batch_size = get_option( 'wp2static_gitlab_private_batch_size', 20 );
         $large_file_threshold = get_option( 'wp2static_gitlab_private_large_file_threshold', 1048576 );
         $adaptive_batching = get_option( 'wp2static_gitlab_private_adaptive_batching', true );
+        $squash_commits = get_option( 'wp2static_gitlab_private_squash_commits', true );
+        
+        // If squashing is enabled, use larger batches to create fewer commits
+        if ( $squash_commits ) {
+            $effective_batch_size = min( 100, $base_batch_size * 3 ); // Triple the batch size for fewer commits
+            $this->verboseLog( "Squashing enabled - using larger batch size: $effective_batch_size" );
+        } else {
+            $effective_batch_size = $base_batch_size;
+        }
         
         if ( $adaptive_batching ) {
-            $batches = $this->createAdaptiveBatches( $files, $base_batch_size, $large_file_threshold );
+            $batches = $this->createAdaptiveBatches( $files, $effective_batch_size, $large_file_threshold );
         } else {
-            $batches = array_chunk( $files, $base_batch_size );
+            $batches = array_chunk( $files, $effective_batch_size );
         }
         
         $total_batches = count( $batches );
@@ -797,6 +811,7 @@ class GitLabPrivateDeployer {
                 WsLog::l( sprintf( 'Slow API request detected: %.2fs for %d files - consider reducing batch size', 
                     $request_duration, $file_count ) );
             }
+            
             return json_decode( $response_body, true );
         } else {
             $error_msg = "GitLab API error (HTTP $response_code): $response_body";

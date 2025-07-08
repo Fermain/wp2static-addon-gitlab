@@ -374,6 +374,27 @@ if ( isset( $_GET['test_result'] ) && isset( $_GET['test_message'] ) ) {
                         </p>
                     </td>
                 </tr>
+                
+                <tr>
+                    <th scope="row">
+                        <label for="gitlabSquashCommits">Reduce Deployment Commits</label>
+                    </th>
+                    <td>
+                        <label>
+                            <input 
+                                type="checkbox" 
+                                name="gitlabSquashCommits" 
+                                id="gitlabSquashCommits" 
+                                value="1"
+                                <?php checked( $options['gitlabSquashCommits'] ); ?>
+                            />
+                            Use larger batch sizes to create fewer commits during deployment
+                        </label>
+                        <p class="description">
+                            <strong>Recommended:</strong> When enabled, the plugin will use larger batch sizes (up to 3x the normal size) to significantly reduce the number of commits created during deployment. This keeps git history much cleaner, especially on large initial deployments.
+                        </p>
+                    </td>
+                </tr>
             </tbody>
         </table>
         
