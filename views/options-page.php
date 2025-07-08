@@ -291,20 +291,24 @@ if ( isset( $_GET['test_result'] ) && isset( $_GET['test_message'] ) ) {
                 
                 <tr>
                     <th scope="row">
-                        <label for="gitlabLargeFileThreshold">Large File Threshold</label>
+                        <label for="gitlabLargeFileThresholdValue">Large File Threshold</label>
                     </th>
                     <td>
                         <input 
                             type="number" 
-                            name="gitlabLargeFileThreshold" 
-                            id="gitlabLargeFileThreshold" 
-                            value="<?php echo esc_attr( $options['gitlabLargeFileThreshold'] ); ?>" 
-                            class="regular-text"
-                            min="102400"
-                            step="102400"
-                        /> bytes
+                            name="gitlabLargeFileThresholdValue" 
+                            id="gitlabLargeFileThresholdValue" 
+                            value="<?php echo esc_attr( $options['gitlabLargeFileThresholdValue'] ); ?>" 
+                            class="small-text"
+                            min="1"
+                            max="1000"
+                        />
+                        <select name="gitlabLargeFileThresholdUnit" id="gitlabLargeFileThresholdUnit">
+                            <option value="KB" <?php selected( $options['gitlabLargeFileThresholdUnit'], 'KB' ); ?>>KB</option>
+                            <option value="MB" <?php selected( $options['gitlabLargeFileThresholdUnit'], 'MB' ); ?>>MB</option>
+                        </select>
                         <p class="description">
-                            Files larger than this size will be processed in smaller batches (minimum 100KB). Default: 1MB (1048576 bytes).
+                            Files larger than this size will be processed in smaller batches (minimum 100KB). Default: 1 MB.
                         </p>
                     </td>
                 </tr>
@@ -346,6 +350,27 @@ if ( isset( $_GET['test_result'] ) && isset( $_GET['test_message'] ) ) {
                         /> attempts
                         <p class="description">
                             Number of times to retry failed requests (1-10). More retries increase reliability but take longer on persistent failures. Default: 3.
+                        </p>
+                    </td>
+                </tr>
+                
+                <tr>
+                    <th scope="row">
+                        <label for="gitlabSuccessCommit">Success Commit</label>
+                    </th>
+                    <td>
+                        <label>
+                            <input 
+                                type="checkbox" 
+                                name="gitlabSuccessCommit" 
+                                id="gitlabSuccessCommit" 
+                                value="1"
+                                <?php checked( $options['gitlabSuccessCommit'] ); ?>
+                            />
+                            Create a blank commit after successful deployment to signal CI systems
+                        </label>
+                        <p class="description">
+                            When enabled, creates an empty commit with a "Deployment completed" message after all files are successfully uploaded. This provides a clear signal to CI/CD systems that the deployment is finished.
                         </p>
                     </td>
                 </tr>

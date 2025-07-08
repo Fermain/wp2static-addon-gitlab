@@ -51,7 +51,30 @@ class GitLabPrivateDeployer {
             'gitlabLargeFileThreshold' => get_option( 'wp2static_gitlab_private_large_file_threshold', 1048576 ),
             'gitlabAdaptiveBatching' => get_option( 'wp2static_gitlab_private_adaptive_batching', true ),
             'gitlabRetryAttempts' => get_option( 'wp2static_gitlab_private_retry_attempts', 3 ),
+            'gitlabSuccessCommit' => get_option( 'wp2static_gitlab_private_success_commit', true ),
         ];
+        
+        // Calculate human-readable values for large file threshold (backwards compatibility)
+        $threshold_value = get_option( 'wp2static_gitlab_private_large_file_threshold_value' );
+        $threshold_unit = get_option( 'wp2static_gitlab_private_large_file_threshold_unit' );
+        
+        if ( empty( $threshold_value ) || empty( $threshold_unit ) ) {
+            // Convert existing byte value to human readable
+            $bytes = $options['gitlabLargeFileThreshold'];
+            if ( $bytes >= 1048576 && $bytes % 1048576 === 0 ) {
+                $threshold_value = $bytes / 1048576;
+                $threshold_unit = 'MB';
+            } elseif ( $bytes >= 1024 && $bytes % 1024 === 0 ) {
+                $threshold_value = $bytes / 1024;
+                $threshold_unit = 'KB';
+            } else {
+                $threshold_value = max( 1, $bytes / 1048576 );
+                $threshold_unit = 'MB';
+            }
+        }
+        
+        $options['gitlabLargeFileThresholdValue'] = $threshold_value;
+        $options['gitlabLargeFileThresholdUnit'] = $threshold_unit;
         
         include WP2STATIC_GITLAB_PRIVATE_PATH . 'views/options-page.php';
     }
@@ -78,9 +101,28 @@ class GitLabPrivateDeployer {
         update_option( 'wp2static_gitlab_private_api_timeout', max( 30, intval( $_POST['gitlabApiTimeout'] ?? 120 ) ) );
         update_option( 'wp2static_gitlab_private_connection_timeout', max( 10, intval( $_POST['gitlabConnectionTimeout'] ?? 30 ) ) );
         update_option( 'wp2static_gitlab_private_batch_size', max( 1, min( 100, intval( $_POST['gitlabBatchSize'] ?? 20 ) ) ) );
-        update_option( 'wp2static_gitlab_private_large_file_threshold', max( 102400, intval( $_POST['gitlabLargeFileThreshold'] ?? 1048576 ) ) ); // Min 100KB
+        
+        // Handle large file threshold with human-friendly input
+        $threshold_value = max( 1, intval( $_POST['gitlabLargeFileThresholdValue'] ?? 1 ) );
+        $threshold_unit = sanitize_text_field( $_POST['gitlabLargeFileThresholdUnit'] ?? 'MB' );
+        
+        $threshold_bytes = $threshold_value;
+        if ( $threshold_unit === 'MB' ) {
+            $threshold_bytes = $threshold_value * 1048576;
+        } elseif ( $threshold_unit === 'KB' ) {
+            $threshold_bytes = $threshold_value * 1024;
+        }
+        
+        // Ensure minimum threshold of 100KB
+        $threshold_bytes = max( 102400, $threshold_bytes );
+        
+        update_option( 'wp2static_gitlab_private_large_file_threshold', $threshold_bytes );
+        update_option( 'wp2static_gitlab_private_large_file_threshold_value', $threshold_value );
+        update_option( 'wp2static_gitlab_private_large_file_threshold_unit', $threshold_unit );
+        
         update_option( 'wp2static_gitlab_private_adaptive_batching', isset( $_POST['gitlabAdaptiveBatching'] ) ? true : false );
         update_option( 'wp2static_gitlab_private_retry_attempts', max( 1, min( 10, intval( $_POST['gitlabRetryAttempts'] ?? 3 ) ) ) );
+        update_option( 'wp2static_gitlab_private_success_commit', isset( $_POST['gitlabSuccessCommit'] ) ? true : false );
         
         wp_redirect( 
             add_query_arg( 
@@ -197,6 +239,9 @@ class GitLabPrivateDeployer {
         
         // Check for deleted files and remove them from repository
         $this->handleDeletedFiles( $files );
+        
+        // Create success commit to signal CI systems
+        $this->createSuccessCommit();
             
             WsLog::l( 'GitLab Private deployment completed' );
         } catch ( \Exception $e ) {
@@ -225,13 +270,17 @@ class GitLabPrivateDeployer {
     }
 
     private function logDeploymentSettings() : void {
+        $threshold_value = get_option( 'wp2static_gitlab_private_large_file_threshold_value', 1 );
+        $threshold_unit = get_option( 'wp2static_gitlab_private_large_file_threshold_unit', 'MB' );
+        
         $settings = [
             'API Timeout' => get_option( 'wp2static_gitlab_private_api_timeout', 120 ) . 's',
             'Connection Timeout' => get_option( 'wp2static_gitlab_private_connection_timeout', 30 ) . 's',
             'Batch Size' => get_option( 'wp2static_gitlab_private_batch_size', 20 ),
-            'Large File Threshold' => size_format( get_option( 'wp2static_gitlab_private_large_file_threshold', 1048576 ) ),
+            'Large File Threshold' => $threshold_value . ' ' . $threshold_unit,
             'Adaptive Batching' => get_option( 'wp2static_gitlab_private_adaptive_batching', true ) ? 'Enabled' : 'Disabled',
             'Retry Attempts' => get_option( 'wp2static_gitlab_private_retry_attempts', 3 ),
+            'Success Commit' => get_option( 'wp2static_gitlab_private_success_commit', true ) ? 'Enabled' : 'Disabled',
         ];
         
         $settings_log = 'Deployment settings: ';
@@ -241,6 +290,51 @@ class GitLabPrivateDeployer {
         $settings_log = rtrim( $settings_log, ', ' );
         
         $this->verboseLog( $settings_log );
+    }
+
+    private function createSuccessCommit() : void {
+        $success_commit_enabled = get_option( 'wp2static_gitlab_private_success_commit', true );
+        
+        if ( ! $success_commit_enabled ) {
+            $this->verboseLog( 'Success commit is disabled - skipping' );
+            return;
+        }
+
+        try {
+            $gitlab_url = get_option( 'wp2static_gitlab_private_url' );
+            $project_id = get_option( 'wp2static_gitlab_private_project_id' );
+            $access_token = get_option( 'wp2static_gitlab_private_access_token' );
+            $branch = get_option( 'wp2static_gitlab_private_branch' );
+            $author_name = get_option( 'wp2static_gitlab_private_author_name' );
+            $author_email = get_option( 'wp2static_gitlab_private_author_email' );
+
+            $api_url = $gitlab_url . '/api/v4/projects/' . urlencode( $project_id ) . '/repository/commits';
+            
+            $commit_message = 'Deployment completed successfully ✓';
+            $timestamp = current_time( 'Y-m-d H:i:s T' );
+            
+            $payload = [
+                'branch' => $branch,
+                'commit_message' => $commit_message . "\n\nDeployment finished at: $timestamp",
+                'actions' => [], // Empty actions array creates a blank commit
+                'author_name' => $author_name,
+                'author_email' => $author_email,
+            ];
+
+            WsLog::l( 'Creating success commit to signal deployment completion' );
+            
+            $response = $this->makeApiRequest( $api_url, $payload, $access_token );
+            
+            if ( $response ) {
+                WsLog::l( 'Success commit created successfully' );
+                $this->verboseLog( 'Success commit ID: ' . ( $response['id'] ?? 'unknown' ) );
+            } else {
+                WsLog::l( 'Failed to create success commit (not critical to deployment)' );
+            }
+            
+        } catch ( \Exception $e ) {
+            WsLog::l( 'Error creating success commit: ' . $e->getMessage() . ' (not critical to deployment)' );
+        }
     }
 
     private function getFilesToDeploy( string $processed_site_path ) : array {
