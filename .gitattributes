@@ -1,0 +1,29 @@
+# Define text files for proper line ending handling
+*.php text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.xml text eol=lf
+
+# Files to exclude from ZIP archives and git archive
+.gitattributes export-ignore
+.gitignore export-ignore
+.github/ export-ignore
+README.md export-ignore
+composer.json export-ignore
+composer.lock export-ignore
+phpunit.xml* export-ignore
+tests/ export-ignore
+
+# Binary files
+*.zip binary
+*.tar.gz binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary 

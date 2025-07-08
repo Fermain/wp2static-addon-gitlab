@@ -1,0 +1,124 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Get version from tag
+      id: version
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "version_number=${VERSION#v}" >> $GITHUB_OUTPUT
+        
+    - name: Verify version matches plugin header
+      run: |
+        PLUGIN_VERSION=$(grep "Version:" wp2static-addon-gitlab-private.php | sed 's/.*Version: *//' | sed 's/ *\*\/.*//')
+        TAG_VERSION="${{ steps.version.outputs.version_number }}"
+        echo "Plugin version: $PLUGIN_VERSION"
+        echo "Tag version: $TAG_VERSION"
+        if [ "$PLUGIN_VERSION" != "$TAG_VERSION" ]; then
+          echo "❌ Version mismatch! Plugin header shows $PLUGIN_VERSION but tag is $TAG_VERSION"
+          exit 1
+        else
+          echo "✅ Version numbers match: $TAG_VERSION"
+        fi
+    
+    - name: Create release archive
+      run: |
+        ARCHIVE_NAME="wp2static-addon-gitlab-private-${{ steps.version.outputs.version_number }}.zip"
+        echo "Creating archive: $ARCHIVE_NAME"
+        
+        # Create temporary directory for clean files
+        mkdir -p build/wp2static-addon-gitlab-private
+        
+        # Copy plugin files (exclude dev files)
+        rsync -av \
+          --exclude='.git*' \
+          --exclude='.github' \
+          --exclude='build' \
+          --exclude='*.md' \
+          --exclude='composer.json' \
+          --exclude='composer.lock' \
+          --exclude='phpunit.xml*' \
+          --exclude='tests' \
+          --exclude='.DS_Store' \
+          --exclude='Thumbs.db' \
+          ./ build/wp2static-addon-gitlab-private/
+        
+        # Create the ZIP file
+        cd build
+        zip -r "../$ARCHIVE_NAME" wp2static-addon-gitlab-private/
+        cd ..
+        
+        # Verify the archive
+        echo "Archive contents:"
+        unzip -l "$ARCHIVE_NAME" | head -20
+        
+        echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_ENV
+        
+    - name: Generate release notes
+      id: release_notes
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        
+        # Get the previous tag for changelog
+        PREV_TAG=$(git describe --tags --abbrev=0 $VERSION^ 2>/dev/null || echo "")
+        
+        echo "# WP2Static GitLab Private Add-on $VERSION" > release_notes.md
+        echo "" >> release_notes.md
+        
+        # Extract version info from plugin file
+        grep -A 5 "Version: " wp2static-addon-gitlab-private.php | head -10 >> release_notes.md || true
+        echo "" >> release_notes.md
+        
+        if [ -n "$PREV_TAG" ]; then
+          echo "## Changes since $PREV_TAG" >> release_notes.md
+          echo "" >> release_notes.md
+          git log --pretty=format:"- %s" $PREV_TAG..$VERSION >> release_notes.md
+        else
+          echo "## Changes in this version" >> release_notes.md
+          echo "" >> release_notes.md
+          git log --pretty=format:"- %s" --max-count=10 >> release_notes.md
+        fi
+        
+        echo "" >> release_notes.md
+        echo "## Installation" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "1. Download the \`${{ env.archive_name }}\` file below" >> release_notes.md
+        echo "2. In WordPress admin, go to Plugins → Add New → Upload Plugin" >> release_notes.md
+        echo "3. Upload the ZIP file and activate the plugin" >> release_notes.md
+        echo "4. Configure under WP2Static → GitLab Private" >> release_notes.md
+        
+        echo "Release notes preview:"
+        cat release_notes.md
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.version.outputs.version }}
+        name: ${{ steps.version.outputs.version }}
+        body_path: release_notes.md
+        files: ${{ env.archive_name }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Upload artifact for review
+      uses: actions/upload-artifact@v3
+      with:
+        name: plugin-archive
+        path: ${{ env.archive_name }}
+        retention-days: 30 
