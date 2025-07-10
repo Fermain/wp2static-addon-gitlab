@@ -354,26 +354,7 @@ if ( isset( $_GET['test_result'] ) && isset( $_GET['test_message'] ) ) {
                     </td>
                 </tr>
                 
-                <tr>
-                    <th scope="row">
-                        <label for="gitlabSuccessCommit">Success Commit</label>
-                    </th>
-                    <td>
-                        <label>
-                            <input 
-                                type="checkbox" 
-                                name="gitlabSuccessCommit" 
-                                id="gitlabSuccessCommit" 
-                                value="1"
-                                <?php checked( $options['gitlabSuccessCommit'] ); ?>
-                            />
-                            Create a blank commit after successful deployment to signal CI systems
-                        </label>
-                        <p class="description">
-                            When enabled, creates an empty commit with a "Deployment completed" message after all files are successfully uploaded. This provides a clear signal to CI/CD systems that the deployment is finished.
-                        </p>
-                    </td>
-                </tr>
+
                 
                 <tr>
                     <th scope="row">

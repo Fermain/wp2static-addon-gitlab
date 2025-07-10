@@ -51,7 +51,6 @@ class GitLabPrivateDeployer {
             'gitlabLargeFileThreshold' => get_option( 'wp2static_gitlab_private_large_file_threshold', 1048576 ),
             'gitlabAdaptiveBatching' => get_option( 'wp2static_gitlab_private_adaptive_batching', true ),
             'gitlabRetryAttempts' => get_option( 'wp2static_gitlab_private_retry_attempts', 3 ),
-            'gitlabSuccessCommit' => get_option( 'wp2static_gitlab_private_success_commit', true ),
             'gitlabSquashCommits' => get_option( 'wp2static_gitlab_private_squash_commits', true ),
         ];
         
@@ -123,7 +122,6 @@ class GitLabPrivateDeployer {
         
         update_option( 'wp2static_gitlab_private_adaptive_batching', isset( $_POST['gitlabAdaptiveBatching'] ) ? true : false );
         update_option( 'wp2static_gitlab_private_retry_attempts', max( 1, min( 10, intval( $_POST['gitlabRetryAttempts'] ?? 3 ) ) ) );
-        update_option( 'wp2static_gitlab_private_success_commit', isset( $_POST['gitlabSuccessCommit'] ) ? true : false );
         update_option( 'wp2static_gitlab_private_squash_commits', isset( $_POST['gitlabSquashCommits'] ) ? true : false );
         
         wp_redirect( 
@@ -244,9 +242,6 @@ class GitLabPrivateDeployer {
         
         // Check for deleted files and remove them from repository
         $this->handleDeletedFiles( $files );
-        
-        // Create success commit to signal CI systems
-        $this->createSuccessCommit();
             
             WsLog::l( 'GitLab Private deployment completed' );
         } catch ( \Exception $e ) {
@@ -285,7 +280,6 @@ class GitLabPrivateDeployer {
             'Large File Threshold' => $threshold_value . ' ' . $threshold_unit,
             'Adaptive Batching' => get_option( 'wp2static_gitlab_private_adaptive_batching', true ) ? 'Enabled' : 'Disabled',
             'Retry Attempts' => get_option( 'wp2static_gitlab_private_retry_attempts', 3 ),
-            'Success Commit' => get_option( 'wp2static_gitlab_private_success_commit', true ) ? 'Enabled' : 'Disabled',
             'Reduce Commits' => get_option( 'wp2static_gitlab_private_squash_commits', true ) ? 'Enabled' : 'Disabled',
         ];
         
@@ -300,50 +294,7 @@ class GitLabPrivateDeployer {
 
 
 
-    private function createSuccessCommit() : void {
-        $success_commit_enabled = get_option( 'wp2static_gitlab_private_success_commit', true );
-        
-        if ( ! $success_commit_enabled ) {
-            $this->verboseLog( 'Success commit is disabled - skipping' );
-            return;
-        }
 
-        try {
-            $gitlab_url = get_option( 'wp2static_gitlab_private_url' );
-            $project_id = get_option( 'wp2static_gitlab_private_project_id' );
-            $access_token = get_option( 'wp2static_gitlab_private_access_token' );
-            $branch = get_option( 'wp2static_gitlab_private_branch' );
-            $author_name = get_option( 'wp2static_gitlab_private_author_name' );
-            $author_email = get_option( 'wp2static_gitlab_private_author_email' );
-
-            $api_url = $gitlab_url . '/api/v4/projects/' . urlencode( $project_id ) . '/repository/commits';
-            
-            $commit_message = 'Deployment completed successfully ✓';
-            $timestamp = current_time( 'Y-m-d H:i:s T' );
-            
-            $payload = [
-                'branch' => $branch,
-                'commit_message' => $commit_message . "\n\nDeployment finished at: $timestamp",
-                'actions' => [], // Empty actions array creates a blank commit
-                'author_name' => $author_name,
-                'author_email' => $author_email,
-            ];
-
-            WsLog::l( 'Creating success commit to signal deployment completion' );
-            
-            $response = $this->makeApiRequest( $api_url, $payload, $access_token );
-            
-            if ( $response ) {
-                WsLog::l( 'Success commit created successfully' );
-                $this->verboseLog( 'Success commit ID: ' . ( $response['id'] ?? 'unknown' ) );
-            } else {
-                WsLog::l( 'Failed to create success commit (not critical to deployment)' );
-            }
-            
-        } catch ( \Exception $e ) {
-            WsLog::l( 'Error creating success commit: ' . $e->getMessage() . ' (not critical to deployment)' );
-        }
-    }
 
     private function getFilesToDeploy( string $processed_site_path ) : array {
         $files = [];
