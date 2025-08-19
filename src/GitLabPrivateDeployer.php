@@ -167,8 +167,8 @@ class GitLabPrivateDeployer {
             WsLog::l( 'GitLab Private deployment started' );
             
             $this->validateConfiguration();
-            
-                    $files = $this->getFilesToDeploy( $processed_site_path );
+
+            $files = $this->getFilesToDeploy( $processed_site_path );
         WsLog::l( 'Found ' . count( $files ) . ' files to deploy' );
 
         if ( empty( $files ) ) {
@@ -250,6 +250,11 @@ class GitLabPrivateDeployer {
         return $files;
     }
 
+    private function getFilesToDeploy( string $processed_site_path ) : array {
+        $all_files = $this->getAllLocalFiles( $processed_site_path );
+        return $this->filterFilesToDeploy( $all_files );
+    }
+
     private function filterFilesToDeploy( array $all_files ) : array {
         $files_to_deploy = [];
 
@@ -269,14 +274,24 @@ class GitLabPrivateDeployer {
     }
 
     private function deployFiles( array $files ) : void {
-        WsLog::l( "Deploying " . count( $files ) . " files in a single commit" );
-        
-        $success = $this->deployFileBatch( $files );
-        
-        if ( ! $success ) {
-            throw new \Exception( "Failed to deploy files to GitLab. Check logs for details." );
+        $total = count( $files );
+        if ( $total === 0 ) {
+            return;
         }
-        
+        $chunk_size = 80;
+        $chunks = array_chunk( $files, $chunk_size );
+        $committed = 0;
+        foreach ( $chunks as $index => $chunk ) {
+            $ok = $this->deployFileBatch( $chunk );
+            if ( ! $ok ) {
+                throw new \Exception( "Failed to deploy files to GitLab (chunk " . ($index + 1) . "/" . count( $chunks ) . ")" );
+            }
+            foreach ( $chunk as $file ) {
+                DeployCache::addFile( $file['remote_path'], 'wp2static-gitlab-private' );
+            }
+            $committed += count( $chunk );
+            $this->verboseLog( "Committed $committed/$total files" );
+        }
         WsLog::l( 'Deployment completed successfully' );
     }
 
@@ -290,16 +305,11 @@ class GitLabPrivateDeployer {
         $author_email = get_option( 'wp2static_gitlab_private_author_email' );
 
         $success = $this->attemptMixedCommit( $files, $gitlab_url, $project_id, $access_token, $branch, $commit_message, $author_name, $author_email );
-        
         if ( $success ) {
-            foreach ( $files as $file ) {
-                DeployCache::addFile( $file['remote_path'], 'wp2static-gitlab-private' );
-            }
             return true;
-        } else {
-            $this->verboseLog( "Deployment failed" );
-            return false;
         }
+        $this->verboseLog( "Deployment failed" );
+        return false;
     }
 
     private function attemptMixedCommit( array $files, string $gitlab_url, string $project_id, string $access_token, string $branch, string $commit_message, string $author_name, string $author_email ) : bool {
@@ -356,9 +366,7 @@ class GitLabPrivateDeployer {
 
     private function getExistingFiles( string $gitlab_url, string $project_id, string $access_token, string $branch ) : array {
         $api_url = $gitlab_url . '/api/v4/projects/' . urlencode( $project_id ) . '/repository/tree';
-        
         $connection_timeout = 30;
-        
         $args = [
             'method' => 'GET',
             'headers' => [
@@ -367,31 +375,39 @@ class GitLabPrivateDeployer {
             'timeout' => $connection_timeout,
         ];
 
-        $response = wp_remote_request( $api_url . '?ref=' . urlencode( $branch ) . '&recursive=true&per_page=100', $args );
-
-        if ( is_wp_error( $response ) ) {
-            $this->verboseLog( 'Failed to get existing files: ' . $response->get_error_message() );
-            return [];
-        }
-        
-        $response_code = wp_remote_retrieve_response_code( $response );
-        if ( $response_code === 404 ) {
-            $this->verboseLog( "Branch '$branch' doesn't exist yet - assuming empty repository" );
-            return [];
-        } elseif ( $response_code !== 200 ) {
-            $this->verboseLog( "Failed to get existing files (HTTP $response_code) - assuming empty repository" );
-            return [];
-        }
-
-        $files = json_decode( wp_remote_retrieve_body( $response ), true );
         $file_paths = [];
-        
-        foreach ( $files as $file ) {
-            if ( $file['type'] === 'blob' ) {
-                $file_paths[] = $file['path'];
+        $page = 1;
+        $total_pages = null;
+        do {
+            $url = $api_url . '?ref=' . urlencode( $branch ) . '&recursive=true&per_page=100&page=' . $page;
+            $response = wp_remote_request( $url, $args );
+            if ( is_wp_error( $response ) ) {
+                $this->verboseLog( 'Failed to get existing files: ' . $response->get_error_message() );
+                break;
             }
-        }
-        
+            $response_code = wp_remote_retrieve_response_code( $response );
+            if ( $response_code === 404 ) {
+                $this->verboseLog( "Branch '$branch' doesn't exist yet - assuming empty repository" );
+                break;
+            } elseif ( $response_code !== 200 ) {
+                $this->verboseLog( "Failed to get existing files (HTTP $response_code) - assuming empty repository" );
+                break;
+            }
+            $body = json_decode( wp_remote_retrieve_body( $response ), true );
+            if ( is_array( $body ) ) {
+                foreach ( $body as $file ) {
+                    if ( isset( $file['type'] ) && $file['type'] === 'blob' && isset( $file['path'] ) ) {
+                        $file_paths[] = $file['path'];
+                    }
+                }
+            }
+            if ( $total_pages === null ) {
+                $tp = wp_remote_retrieve_header( $response, 'x-total-pages' );
+                $total_pages = $tp ? (int) $tp : 1;
+            }
+            $page++;
+        } while ( $page <= ( $total_pages ?? 1 ) );
+
         $this->verboseLog( 'Found ' . count( $file_paths ) . ' existing files in repository' );
         return $file_paths;
     }
