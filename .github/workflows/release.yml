@@ -1,3 +1,64 @@
+name: Release GitLab Private Add-on
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set version in plugin files (from tag)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF##*/}"
+          VERSION="${TAG#v}"
+          echo "Version from tag: $VERSION"
+          sed -E -i "s/^(\\s*\\*\\s*Version:\\s*).*/\\1${VERSION}/" wp2static-addon-gitlab-private.php
+          sed -E -i "s/(define\\(\\s*'WP2STATIC_GITLAB_PRIVATE_VERSION'\\s*,\\s*')[^']*('\\s*\\)\\s*;)/\\1${VERSION}\\2/" wp2static-addon-gitlab-private.php
+
+      - name: Validate version set in plugin files
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF##*/}"
+          VERSION="${TAG#v}"
+          grep -E "^\s*\*\s*Version:\s*${VERSION}$" "wp2static-addon-gitlab-private.php" | cat
+          grep -E "define\(\s*'WP2STATIC_GITLAB_PRIVATE_VERSION'\s*,\s*'${VERSION}'\s*\)" "wp2static-addon-gitlab-private.php" | cat
+
+      - name: Build zip
+        run: |
+          mkdir -p dist
+          zip -r9 dist/wp2static-addon-gitlab-private-${GITHUB_REF_NAME#v}.zip . \
+            -x "**/.git/**" \
+            -x "**/.github/**" \
+            -x "**/.DS_Store" \
+            -x "**/dist/**" \
+            -x "**/scripts/**"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wp2static-addon-gitlab-private-${{ github.ref_name }}
+          path: dist/*.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 name: Create Release
 
 on:
