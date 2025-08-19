@@ -11,114 +11,108 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    
-    - name: Get version from tag
-      id: version
-      run: |
-        VERSION=${GITHUB_REF#refs/tags/}
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "version_number=${VERSION#v}" >> $GITHUB_OUTPUT
-        
+      uses: actions/checkout@v3
+      
+    - name: Extract version from tag
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      
     - name: Verify version matches plugin header
       run: |
-        PLUGIN_VERSION=$(grep "Version:" wp2static-addon-gitlab-private.php | sed 's/.*Version: *//' | sed 's/ *\*\/.*//')
-        TAG_VERSION="${{ steps.version.outputs.version_number }}"
+        PLUGIN_VERSION=$(grep "Version:" wp2static.php | sed 's/.*Version: *\([0-9.-]*\).*/\1/')
+        TAG_VERSION="${{ steps.get_version.outputs.VERSION }}"
+        
         echo "Plugin version: $PLUGIN_VERSION"
         echo "Tag version: $TAG_VERSION"
+        
         if [ "$PLUGIN_VERSION" != "$TAG_VERSION" ]; then
-          echo "❌ Version mismatch! Plugin header shows $PLUGIN_VERSION but tag is $TAG_VERSION"
+          echo "Version mismatch! Plugin header shows $PLUGIN_VERSION but tag is $TAG_VERSION"
           exit 1
-        else
-          echo "✅ Version numbers match: $TAG_VERSION"
         fi
-    
-    - name: Create release archive
+        
+    - name: Create release directory
       run: |
-        ARCHIVE_NAME="wp2static-addon-gitlab-private-${{ steps.version.outputs.version_number }}.zip"
-        echo "Creating archive: $ARCHIVE_NAME"
+        mkdir -p build/wp2static
         
-        # Create temporary directory for clean files
-        mkdir -p build/wp2static-addon-gitlab-private
-        
-        # Copy plugin files (exclude dev files)
+    - name: Copy plugin files
+      run: |
         rsync -av \
           --exclude='.git*' \
-          --exclude='.github' \
-          --exclude='build' \
+          --exclude='.github/' \
+          --exclude='build/' \
+          --exclude='composer.*' \
+          --exclude='tests/' \
+          --exclude='phpunit.*' \
           --exclude='*.md' \
-          --exclude='composer.json' \
-          --exclude='composer.lock' \
-          --exclude='phpunit.xml*' \
-          --exclude='tests' \
+          --exclude='node_modules/' \
           --exclude='.DS_Store' \
           --exclude='Thumbs.db' \
-          ./ build/wp2static-addon-gitlab-private/
-        
-        # Create the ZIP file
+          ./ build/wp2static/
+          
+    - name: Create ZIP file
+      run: |
         cd build
-        zip -r "../$ARCHIVE_NAME" wp2static-addon-gitlab-private/
+        zip -r ../wp2static-${{ steps.get_version.outputs.VERSION }}.zip wp2static/
         cd ..
-        
-        # Verify the archive
-        echo "Archive contents:"
-        unzip -l "$ARCHIVE_NAME" | head -20
-        
-        echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_ENV
         
     - name: Generate release notes
       id: release_notes
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
+        PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
         
-        # Get the previous tag for changelog
-        PREV_TAG=$(git describe --tags --abbrev=0 $VERSION^ 2>/dev/null || echo "")
-        
-        echo "# WP2Static GitLab Private Add-on $VERSION" > release_notes.md
-        echo "" >> release_notes.md
-        
-        # Extract version info from plugin file
-        grep -A 5 "Version: " wp2static-addon-gitlab-private.php | head -10 >> release_notes.md || true
-        echo "" >> release_notes.md
-        
-        if [ -n "$PREV_TAG" ]; then
-          echo "## Changes since $PREV_TAG" >> release_notes.md
-          echo "" >> release_notes.md
-          git log --pretty=format:"- %s" $PREV_TAG..$VERSION >> release_notes.md
+        if [ -n "$PREVIOUS_TAG" ]; then
+          CHANGES=$(git log --pretty=format:"- %s" $PREVIOUS_TAG..HEAD)
         else
-          echo "## Changes in this version" >> release_notes.md
-          echo "" >> release_notes.md
-          git log --pretty=format:"- %s" --max-count=10 >> release_notes.md
+          CHANGES=$(git log --pretty=format:"- %s" HEAD)
         fi
         
-        echo "" >> release_notes.md
-        echo "## Installation" >> release_notes.md
-        echo "" >> release_notes.md
-        echo "1. Download the \`${{ env.archive_name }}\` file below" >> release_notes.md
-        echo "2. In WordPress admin, go to Plugins → Add New → Upload Plugin" >> release_notes.md
-        echo "3. Upload the ZIP file and activate the plugin" >> release_notes.md
-        echo "4. Configure under WP2Static → GitLab Private" >> release_notes.md
+        cat > release_notes.md << EOF
+        # WP2Static v${{ steps.get_version.outputs.VERSION }}
         
-        echo "Release notes preview:"
+        Static site generator for WordPress - Internal build.
+        
+        ## Changes in this release
+        
+        $CHANGES
+        
+        ## Installation
+        
+        1. Download the wp2static-${{ steps.get_version.outputs.VERSION }}.zip file
+        2. Upload and activate in WordPress Admin → Plugins
+        3. Configure in WP2Static → Options
+        
+        ## Requirements
+        
+        - WordPress 5.0+
+        - PHP 7.4+
+        - MySQL 5.6+ or MariaDB 10.0+
+        
+        ## Documentation
+        
+        For detailed documentation and usage instructions, visit the WordPress admin interface after installation.
+        EOF
+        
+        echo "Release notes created"
         cat release_notes.md
         
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2.3.2
-      with:
-        tag_name: ${{ steps.version.outputs.version }}
-        name: ${{ steps.version.outputs.version }}
-        body_path: release_notes.md
-        files: ${{ env.archive_name }}
-        draft: false
-        prerelease: false
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
-    - name: Upload artifact for review
-      uses: actions/upload-artifact@v4
       with:
-        name: plugin-archive
-        path: ${{ env.archive_name }}
-        retention-days: 30 
+        tag_name: ${{ github.ref }}
+        release_name: WP2Static v${{ steps.get_version.outputs.VERSION }}
+        body_path: release_notes.md
+        draft: false
+        prerelease: false
+        
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./wp2static-${{ steps.get_version.outputs.VERSION }}.zip
+        asset_name: wp2static-${{ steps.get_version.outputs.VERSION }}.zip
+        asset_content_type: application/zip 
