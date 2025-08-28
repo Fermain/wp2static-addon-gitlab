@@ -3,8 +3,8 @@
  * Plugin Name: WP2Static Add-on: GitLab Private Deployment
  * Plugin URI: https://wp2static.com
  * Description: Deploy your static site to a private GitLab repository.
- * Version: 1.3.0
- * Author: WP2Static
+ * Version: 1.4.0
+ * Author: Fermain
  * Text Domain: wp2static-addon-gitlab-private
  */
 
@@ -52,6 +52,7 @@ register_activation_hook( __FILE__, function() {
     add_option( 'wp2static_gitlab_private_project_id', '' );
     add_option( 'wp2static_gitlab_private_access_token', '' );
     add_option( 'wp2static_gitlab_private_branch', 'main' );
+    add_option( 'wp2static_gitlab_private_deploy_subdir', 'public' );
     add_option( 'wp2static_gitlab_private_commit_message', 'Deploy static site from WP2Static' );
     add_option( 'wp2static_gitlab_private_author_name', 'WP2Static' );
     add_option( 'wp2static_gitlab_private_author_email', 'noreply@wp2static.com' );
