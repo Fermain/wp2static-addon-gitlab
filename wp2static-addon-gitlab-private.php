@@ -52,6 +52,7 @@ register_activation_hook( __FILE__, function() {
     add_option( 'wp2static_gitlab_private_project_id', '' );
     add_option( 'wp2static_gitlab_private_access_token', '' );
     add_option( 'wp2static_gitlab_private_branch', 'main' );
+    add_option( 'wp2static_gitlab_private_deploy_subdir', 'public' );
     add_option( 'wp2static_gitlab_private_commit_message', 'Deploy static site from WP2Static' );
     add_option( 'wp2static_gitlab_private_author_name', 'WP2Static' );
     add_option( 'wp2static_gitlab_private_author_email', 'noreply@wp2static.com' );

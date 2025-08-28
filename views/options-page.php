@@ -132,6 +132,22 @@ if ( isset( $_GET['test_result'] ) && isset( $_GET['test_message'] ) ) {
                 
                 <tr>
                     <th scope="row">
+                        <label for="gitlabDeploySubdir">Deploy Subdirectory</label>
+                    </th>
+                    <td>
+                        <input 
+                            type="text" 
+                            name="gitlabDeploySubdir" 
+                            id="gitlabDeploySubdir" 
+                            value="<?php echo esc_attr( $options['gitlabDeploySubdir'] ); ?>" 
+                            class="regular-text"
+                        />
+                        <p class="description">Deploy into this subdirectory in the repository (e.g., public)</p>
+                    </td>
+                </tr>
+
+                <tr>
+                    <th scope="row">
                         <label for="gitlabCommitMessage">Commit Message</label>
                     </th>
                     <td>

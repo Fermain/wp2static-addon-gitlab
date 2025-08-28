@@ -3,7 +3,6 @@
 namespace WP2StaticGitLabPrivate;
 
 use WP2Static\WsLog;
-use WP2Static\DeployCache;
 
 class GitLabPrivateDeployer {
 
@@ -38,6 +37,7 @@ class GitLabPrivateDeployer {
             'gitlabProjectId' => get_option( 'wp2static_gitlab_private_project_id', '' ),
             'gitlabAccessToken' => get_option( 'wp2static_gitlab_private_access_token', '' ),
             'gitlabBranch' => get_option( 'wp2static_gitlab_private_branch', 'main' ),
+            'gitlabDeploySubdir' => get_option( 'wp2static_gitlab_private_deploy_subdir', 'public' ),
             'gitlabCommitMessage' => get_option( 'wp2static_gitlab_private_commit_message', 'Deploy static site from WP2Static' ),
             'gitlabAuthorName' => get_option( 'wp2static_gitlab_private_author_name', 'WP2Static' ),
             'gitlabAuthorEmail' => get_option( 'wp2static_gitlab_private_author_email', 'noreply@wp2static.com' ),
@@ -60,6 +60,11 @@ class GitLabPrivateDeployer {
         update_option( 'wp2static_gitlab_private_project_id', sanitize_text_field( $_POST['gitlabProjectId'] ?? '' ) );
         update_option( 'wp2static_gitlab_private_access_token', sanitize_text_field( $_POST['gitlabAccessToken'] ?? '' ) );
         update_option( 'wp2static_gitlab_private_branch', sanitize_text_field( $_POST['gitlabBranch'] ?? '' ) );
+        $deploy_subdir = sanitize_text_field( $_POST['gitlabDeploySubdir'] ?? '' );
+        $deploy_subdir = trim( $deploy_subdir );
+        $deploy_subdir = trim( $deploy_subdir, "/\t\n\r\0\x0B" );
+        if ( $deploy_subdir === '' ) { $deploy_subdir = 'public'; }
+        update_option( 'wp2static_gitlab_private_deploy_subdir', $deploy_subdir );
         update_option( 'wp2static_gitlab_private_commit_message', sanitize_text_field( $_POST['gitlabCommitMessage'] ?? '' ) );
         update_option( 'wp2static_gitlab_private_author_name', sanitize_text_field( $_POST['gitlabAuthorName'] ?? '' ) );
         update_option( 'wp2static_gitlab_private_author_email', sanitize_email( $_POST['gitlabAuthorEmail'] ?? '' ) );
@@ -98,14 +103,19 @@ class GitLabPrivateDeployer {
             
             $connection_timeout = 30;
             
-            $args = [
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $access_token,
-                ],
+            $args_bearer = [
+                'headers' => [ 'Authorization' => 'Bearer ' . $access_token ],
                 'timeout' => $connection_timeout,
             ];
-
-            $response = wp_remote_get( $api_url, $args );
+            $response = wp_remote_get( $api_url, $args_bearer );
+            $response_code = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+            if ( $response_code === 401 || $response_code === 403 || $response_code === 0 ) {
+                $args_private = [
+                    'headers' => [ 'PRIVATE-TOKEN' => $access_token ],
+                    'timeout' => $connection_timeout,
+                ];
+                $response = wp_remote_get( $api_url, $args_private );
+            }
 
             if ( is_wp_error( $response ) ) {
                 throw new \Exception( 'Connection failed: ' . $response->get_error_message() );
@@ -117,6 +127,8 @@ class GitLabPrivateDeployer {
                 $project_data = json_decode( wp_remote_retrieve_body( $response ), true );
                 $permissions = $project_data['permissions'] ?? [];
                 $access_level = $permissions['project_access']['access_level'] ?? 0;
+                $default_branch = $project_data['default_branch'] ?? 'main';
+                $path_with_namespace = $project_data['path_with_namespace'] ?? '';
                 
                 $role_names = [
                     10 => 'Guest',
@@ -129,10 +141,10 @@ class GitLabPrivateDeployer {
                 $role_name = $role_names[$access_level] ?? "Unknown ($access_level)";
                 
                 if ( $access_level >= 40 ) {
-                    $message = "Connection successful! Project: {$project_data['name']}, Role: $role_name ✓";
+                    $message = "Connection successful! Project: {$project_data['name']} ({$path_with_namespace}), Default branch: {$default_branch}, Role: $role_name ✓";
                     $type = 'success';
                 } else {
-                    $message = "Connection OK but insufficient permissions. Project: {$project_data['name']}, Role: $role_name. Need Maintainer (40) or higher for protected branches.";
+                    $message = "Connection OK but insufficient permissions. Project: {$project_data['name']} ({$path_with_namespace}), Default branch: {$default_branch}, Role: $role_name. Need Maintainer (40) or higher for protected branches.";
                     $type = 'warning';
                 }
             } else {
@@ -168,27 +180,212 @@ class GitLabPrivateDeployer {
             
             $this->validateConfiguration();
 
-            $files = $this->getFilesToDeploy( $processed_site_path );
-        WsLog::l( 'Found ' . count( $files ) . ' files to deploy' );
+            $this->deployViaGit( $processed_site_path );
 
-        if ( empty( $files ) ) {
-            WsLog::l( 'No files to deploy' );
-            return;
-        }
-        
-        // Additional debugging for blank commit issue
-        $this->verboseLog( 'Sample files to deploy: ' . wp_json_encode( array_slice( $files, 0, 2 ) ) );
-
-        $this->deployFiles( $files );
-        
-        // Check for deleted files and remove them from repository
-        $this->handleDeletedFiles( $files );
-            
             WsLog::l( 'GitLab Private deployment completed' );
         } catch ( \Exception $e ) {
             WsLog::l( 'GitLab Private deployment failed: ' . $e->getMessage() );
             throw $e;
         }
+    }
+
+    private function deployViaGit( string $processed_site_path ) : void {
+        $settings = $this->getSettings();
+        $project = $this->fetchProjectInfo( $settings['url'], $settings['project_id'], $settings['token'] );
+        if ( empty( $project['http_url_to_repo'] ) ) {
+            throw new \Exception( 'Project repo URL missing from GitLab response' );
+        }
+
+        $remote = $this->buildRemoteUrlWithToken( $project['http_url_to_repo'], $settings['token'] );
+
+        $upload_dir = wp_upload_dir();
+        $work_root = trailingslashit( $upload_dir['basedir'] ) . 'wp2static-gitlab-private/tmp';
+        if ( ! wp_mkdir_p( $work_root ) ) {
+            throw new \Exception( 'Failed to create tmp directory' );
+        }
+        $repo_dir = $work_root . '/repo_' . uniqid();
+        if ( ! wp_mkdir_p( $repo_dir ) ) {
+            throw new \Exception( 'Failed to prepare repo directory' );
+        }
+
+        $mask = $settings['token'];
+
+        // Preflight: ensure git is available
+        $this->runCmd( [ 'git', '--version' ], $mask );
+        $this->runCmd( [ 'git', 'clone', '--depth', '1', $remote, $repo_dir ], $mask );
+
+        // Ensure author
+        $author_name = get_option( 'wp2static_gitlab_private_author_name' );
+        $author_email = get_option( 'wp2static_gitlab_private_author_email' );
+        if ( ! is_string( $author_name ) || $author_name === '' ) { $author_name = 'WP2Static'; }
+        if ( ! is_email( $author_email ) ) { $author_email = 'noreply@wp2static.com'; }
+        $this->runCmd( [ 'git', '-C', $repo_dir, 'config', 'user.name', $author_name ], $mask );
+        $this->runCmd( [ 'git', '-C', $repo_dir, 'config', 'user.email', $author_email ], $mask );
+
+        // Prepare branch
+        $branch = get_option( 'wp2static_gitlab_private_branch', 'main' );
+        if ( ! is_string( $branch ) || $branch === '' ) {
+            $branch = is_string( $project['default_branch'] ?? '' ) && $project['default_branch'] !== '' ? $project['default_branch'] : 'main';
+        }
+        $has_remote = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $branch ], $mask );
+        if ( $has_remote['code'] === 0 && trim( $has_remote['out'] ) !== '' ) {
+            $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', '--depth', '1', 'origin', $branch . ':refs/remotes/origin/' . $branch ], $mask );
+            $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $branch, 'origin/' . $branch ], $mask );
+        } else {
+            $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $branch ], $mask );
+        }
+
+        // Scope-limited delete within deploy subdirectory
+        $deploy_subdir = get_option( 'wp2static_gitlab_private_deploy_subdir', 'public' );
+        if ( ! is_string( $deploy_subdir ) || $deploy_subdir === '' ) { $deploy_subdir = 'public'; }
+        $target_root = rtrim( $repo_dir, '/\\' ) . '/' . trim( $deploy_subdir, '/\\' );
+        if ( ! wp_mkdir_p( $target_root ) ) {
+            throw new \Exception( 'Failed to create deploy subdirectory in repo: ' . $deploy_subdir );
+        }
+        $do_cleanup = (bool) get_option( 'wp2static_gitlab_private_delete_orphaned_files', false );
+        if ( $do_cleanup ) {
+            $this->deleteDirectoryContents( $target_root );
+        }
+
+        // Copy processed site into deploy subdir
+        $copied = $this->copyTree( $processed_site_path, $target_root );
+        if ( $copied === 0 ) {
+            WsLog::l( 'No files to copy; aborting commit' );
+        }
+
+        // Commit and push
+        $this->runCmd( [ 'git', '-C', $repo_dir, 'add', '-A' ], $mask );
+        $commit_message = get_option( 'wp2static_gitlab_private_commit_message', 'Deploy static site from WP2Static' );
+        $message = $commit_message;
+        if ( is_int( $copied ) && $copied > 0 ) { $message .= ' (' . $copied . ' files)'; }
+        $commit = $this->runCmd( [ 'git', '-C', $repo_dir, 'commit', '-m', $message, '--author=' . $author_name . ' <' . $author_email . '>' ], $mask, false );
+        $nothingToCommit = ( strpos( $commit['out'], 'nothing to commit' ) !== false );
+
+        $push = $this->runCmd( [ 'git', '-C', $repo_dir, 'push', '-u', 'origin', 'HEAD:refs/heads/' . $branch ], $mask, false );
+        if ( $push['code'] !== 0 ) {
+            $out = $push['out'];
+            if ( is_string( $mask ) && $mask !== '' ) { $out = str_replace( $mask, '***', $out ); }
+            throw new \Exception( 'git push failed: ' . $out );
+        }
+
+        // Cleanup
+        $this->rrmdir( $repo_dir );
+
+        if ( $nothingToCommit ) {
+            WsLog::l( 'Nothing to commit (no changes)' );
+        }
+    }
+
+    private function getSettings() : array {
+        $url = get_option( 'wp2static_gitlab_private_url' );
+        $project_id = get_option( 'wp2static_gitlab_private_project_id' );
+        $token = get_option( 'wp2static_gitlab_private_access_token' );
+        return [
+            'url' => is_string( $url ) ? rtrim( $url, '/' ) : '',
+            'project_id' => is_string( $project_id ) ? $project_id : '',
+            'token' => is_string( $token ) ? $token : '',
+        ];
+    }
+
+    private function fetchProjectInfo( string $base_url, string $project_id, string $token ) : array {
+        $api = $base_url . '/api/v4/projects/' . rawurlencode( $project_id );
+        $args = [ 'headers' => [ 'Authorization' => 'Bearer ' . $token ], 'timeout' => 30 ];
+        $res = wp_remote_get( $api, $args );
+        $code = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
+        if ( $code < 200 || $code >= 300 ) {
+            // Fallback to PRIVATE-TOKEN header
+            $args2 = [ 'headers' => [ 'PRIVATE-TOKEN' => $token ], 'timeout' => 30 ];
+            $res = wp_remote_get( $api, $args2 );
+        }
+        if ( is_wp_error( $res ) ) {
+            throw new \Exception( $res->get_error_message() );
+        }
+        $body = json_decode( wp_remote_retrieve_body( $res ), true );
+        return is_array( $body ) ? $body : [];
+    }
+
+    private function buildRemoteUrlWithToken( string $http_url, string $token ) : string {
+        $parts = wp_parse_url( $http_url );
+        if ( ! $parts || ! isset( $parts['scheme'] ) || ! isset( $parts['host'] ) ) {
+            throw new \Exception( 'Invalid repo URL' );
+        }
+        $cred = 'oauth2:' . rawurlencode( $token ) . '@';
+        $port = isset( $parts['port'] ) ? ( ':' . $parts['port'] ) : '';
+        $path = isset( $parts['path'] ) ? $parts['path'] : '';
+        return $parts['scheme'] . '://' . $cred . $parts['host'] . $port . $path;
+    }
+
+    private function runCmd( array $argv, string $mask = '', bool $throw_on_error = true ) : array {
+        $descriptors = [
+            0 => [ 'pipe', 'r' ],
+            1 => [ 'pipe', 'w' ],
+            2 => [ 'pipe', 'w' ],
+        ];
+        $env = [ 'LC_ALL' => 'C', 'PATH' => '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' ];
+        $proc = proc_open( $argv, $descriptors, $pipes, null, $env );
+        if ( ! is_resource( $proc ) ) {
+            if ( $throw_on_error ) { throw new \Exception( 'Failed to start process' ); }
+            return [ 'code' => 1, 'out' => 'Failed to start process' ];
+        }
+        fclose( $pipes[0] );
+        $stdout = stream_get_contents( $pipes[1] ); fclose( $pipes[1] );
+        $stderr = stream_get_contents( $pipes[2] ); fclose( $pipes[2] );
+        $code = proc_close( $proc );
+        $out = trim( $stdout . ( strlen( $stderr ) ? "\n" . $stderr : '' ) );
+        if ( is_string( $mask ) && $mask !== '' ) { $out = str_replace( $mask, '***', $out ); }
+        if ( $throw_on_error && $code !== 0 ) {
+            throw new \Exception( $out );
+        }
+        return [ 'code' => $code, 'out' => $out ];
+    }
+
+    private function deleteDirectoryContents( string $dir ) : void {
+        if ( ! is_dir( $dir ) ) { return; }
+        $items = scandir( $dir );
+        if ( ! is_array( $items ) ) { return; }
+        foreach ( $items as $item ) {
+            if ( $item === '.' || $item === '..' ) { continue; }
+            $path = $dir . DIRECTORY_SEPARATOR . $item;
+            if ( is_dir( $path ) ) {
+                $this->rrmdir( $path );
+            } else {
+                @unlink( $path );
+            }
+        }
+    }
+
+    private function rrmdir( string $dir ) : void {
+        if ( ! is_dir( $dir ) ) { return; }
+        $items = scandir( $dir );
+        if ( ! is_array( $items ) ) { return; }
+        foreach ( $items as $item ) {
+            if ( $item === '.' || $item === '..' ) { continue; }
+            $path = $dir . DIRECTORY_SEPARATOR . $item;
+            if ( is_dir( $path ) ) {
+                $this->rrmdir( $path );
+            } else {
+                @unlink( $path );
+            }
+        }
+        @rmdir( $dir );
+    }
+
+    private function copyTree( string $src_root, string $dst_root ) : int {
+        $src_root = rtrim( $src_root, '/\\' );
+        $dst_root = rtrim( $dst_root, '/\\' );
+        $count = 0;
+        $it = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $src_root, \FilesystemIterator::SKIP_DOTS ) );
+        foreach ( $it as $file ) {
+            if ( ! $file->isFile() ) { continue; }
+            $abs = $file->getPathname();
+            $rel = substr( $abs, strlen( $src_root ) );
+            $rel = ltrim( str_replace( '\\', '/', $rel ), '/' );
+            $dst = $dst_root . '/' . $rel;
+            $dst_dir = dirname( $dst );
+            if ( ! is_dir( $dst_dir ) ) { wp_mkdir_p( $dst_dir ); }
+            if ( @copy( $abs, $dst ) ) { $count++; }
+        }
+        return $count;
     }
 
     private function validateConfiguration() : void {
@@ -210,311 +407,4 @@ class GitLabPrivateDeployer {
         $this->verboseLog( 'GitLab Private configuration validated successfully' );
     }
 
-    private function getAllLocalFiles( string $processed_site_path ) : array {
-        $files = [];
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(
-                $processed_site_path,
-                \RecursiveDirectoryIterator::SKIP_DOTS
-            )
-        );
-
-        // Normalize the processed site path
-        $normalized_path = rtrim( $processed_site_path, '/' ) . '/';
-        
-        foreach ( $iterator as $file ) {
-            if ( $file->isFile() ) {
-                $local_path = $file->getPathname();
-                
-                // Get relative path more reliably
-                if ( strpos( $local_path, $normalized_path ) === 0 ) {
-                    $relative_path = substr( $local_path, strlen( $normalized_path ) );
-                } else {
-                    // Fallback method
-                    $relative_path = str_replace( $normalized_path, '', $local_path );
-                }
-                
-                // Skip empty paths
-                if ( empty( $relative_path ) ) {
-                    WsLog::l( "Skipping file with empty relative path: $local_path" );
-                    continue;
-                }
-                
-                $files[] = [
-                    'local_path' => $local_path,
-                    'remote_path' => $relative_path,
-                ];
-            }
-        }
-
-        return $files;
-    }
-
-    private function getFilesToDeploy( string $processed_site_path ) : array {
-        $all_files = $this->getAllLocalFiles( $processed_site_path );
-        return $this->filterFilesToDeploy( $all_files );
-    }
-
-    private function filterFilesToDeploy( array $all_files ) : array {
-        $files_to_deploy = [];
-
-        foreach ( $all_files as $file ) {
-            $cache_path = '/' . ltrim( $file['remote_path'], '/' );
-
-            if ( $this->shouldDeployFile( $file['local_path'], $cache_path ) ) {
-                $files_to_deploy[] = $file;
-            }
-        }
-
-        return $files_to_deploy;
-    }
-
-    private function shouldDeployFile( string $local_path, string $remote_path ) : bool {
-        return ! DeployCache::fileisCached( $remote_path, 'wp2static-gitlab-private' );
-    }
-
-    private function deployFiles( array $files ) : void {
-        $total = count( $files );
-        if ( $total === 0 ) {
-            return;
-        }
-        $chunk_size = 80;
-        $chunks = array_chunk( $files, $chunk_size );
-        $committed = 0;
-        foreach ( $chunks as $index => $chunk ) {
-            $ok = $this->deployFileBatch( $chunk );
-            if ( ! $ok ) {
-                throw new \Exception( "Failed to deploy files to GitLab (chunk " . ($index + 1) . "/" . count( $chunks ) . ")" );
-            }
-            foreach ( $chunk as $file ) {
-                DeployCache::addFile( $file['remote_path'], 'wp2static-gitlab-private' );
-            }
-            $committed += count( $chunk );
-            $this->verboseLog( "Committed $committed/$total files" );
-        }
-        WsLog::l( 'Deployment completed successfully' );
-    }
-
-    private function deployFileBatch( array $files ) : bool {
-        $gitlab_url = get_option( 'wp2static_gitlab_private_url' );
-        $project_id = get_option( 'wp2static_gitlab_private_project_id' );
-        $access_token = get_option( 'wp2static_gitlab_private_access_token' );
-        $branch = get_option( 'wp2static_gitlab_private_branch' );
-        $commit_message = get_option( 'wp2static_gitlab_private_commit_message' );
-        $author_name = get_option( 'wp2static_gitlab_private_author_name' );
-        $author_email = get_option( 'wp2static_gitlab_private_author_email' );
-
-        $success = $this->attemptMixedCommit( $files, $gitlab_url, $project_id, $access_token, $branch, $commit_message, $author_name, $author_email );
-        if ( $success ) {
-            return true;
-        }
-        $this->verboseLog( "Deployment failed" );
-        return false;
-    }
-
-    private function attemptMixedCommit( array $files, string $gitlab_url, string $project_id, string $access_token, string $branch, string $commit_message, string $author_name, string $author_email ) : bool {
-        // Get current file list from repository to determine which files exist
-        $existing_files = $this->getExistingFiles( $gitlab_url, $project_id, $access_token, $branch );
-        
-        $actions = [];
-        
-        foreach ( $files as $file ) {
-            if ( ! file_exists( $file['local_path'] ) ) {
-                continue;
-            }
-            
-            $content = file_get_contents( $file['local_path'] );
-            if ( $content === false ) {
-                continue;
-            }
-
-            $action = in_array( $file['remote_path'], $existing_files ) ? 'update' : 'create';
-            
-            $actions[] = [
-                'action' => $action,
-                'file_path' => $file['remote_path'],
-                'content' => base64_encode( $content ),
-                'encoding' => 'base64',
-            ];
-        }
-
-        if ( empty( $actions ) ) {
-            return true;
-        }
-
-        $api_url = $gitlab_url . '/api/v4/projects/' . urlencode( $project_id ) . '/repository/commits';
-        
-        $payload = [
-            'branch' => $branch,
-            'commit_message' => $commit_message . ' (mixed actions, ' . count( $actions ) . ' files)',
-            'actions' => $actions,
-            'author_name' => $author_name,
-            'author_email' => $author_email,
-        ];
-
-        WsLog::l( "Deploying " . count( $actions ) . " files to GitLab (mixed strategy)" );
-        
-        $response = $this->makeApiRequest( $api_url, $payload, $access_token );
-        
-        if ( $response ) {
-            WsLog::l( "Successfully deployed " . count( $actions ) . " files to GitLab using mixed strategy" );
-            return true;
-        }
-        
-        return false;
-    }
-
-    private function getExistingFiles( string $gitlab_url, string $project_id, string $access_token, string $branch ) : array {
-        $api_url = $gitlab_url . '/api/v4/projects/' . urlencode( $project_id ) . '/repository/tree';
-        $connection_timeout = 30;
-        $args = [
-            'method' => 'GET',
-            'headers' => [
-                'Authorization' => 'Bearer ' . $access_token,
-            ],
-            'timeout' => $connection_timeout,
-        ];
-
-        $file_paths = [];
-        $page = 1;
-        $total_pages = null;
-        do {
-            $url = $api_url . '?ref=' . urlencode( $branch ) . '&recursive=true&per_page=100&page=' . $page;
-            $response = wp_remote_request( $url, $args );
-            if ( is_wp_error( $response ) ) {
-                $this->verboseLog( 'Failed to get existing files: ' . $response->get_error_message() );
-                break;
-            }
-            $response_code = wp_remote_retrieve_response_code( $response );
-            if ( $response_code === 404 ) {
-                $this->verboseLog( "Branch '$branch' doesn't exist yet - assuming empty repository" );
-                break;
-            } elseif ( $response_code !== 200 ) {
-                $this->verboseLog( "Failed to get existing files (HTTP $response_code) - assuming empty repository" );
-                break;
-            }
-            $body = json_decode( wp_remote_retrieve_body( $response ), true );
-            if ( is_array( $body ) ) {
-                foreach ( $body as $file ) {
-                    if ( isset( $file['type'] ) && $file['type'] === 'blob' && isset( $file['path'] ) ) {
-                        $file_paths[] = $file['path'];
-                    }
-                }
-            }
-            if ( $total_pages === null ) {
-                $tp = wp_remote_retrieve_header( $response, 'x-total-pages' );
-                $total_pages = $tp ? (int) $tp : 1;
-            }
-            $page++;
-        } while ( $page <= ( $total_pages ?? 1 ) );
-
-        $this->verboseLog( 'Found ' . count( $file_paths ) . ' existing files in repository' );
-        return $file_paths;
-    }
-
-    private function handleDeletedFiles( array $local_files ) : void {
-        $delete_orphaned_files = get_option( 'wp2static_gitlab_private_delete_orphaned_files', false );
-        
-        if ( ! $delete_orphaned_files ) {
-            $this->verboseLog( 'Orphaned file deletion is disabled - skipping cleanup' );
-            return;
-        }
-
-        $gitlab_url = get_option( 'wp2static_gitlab_private_url' );
-        $project_id = get_option( 'wp2static_gitlab_private_project_id' );
-        $access_token = get_option( 'wp2static_gitlab_private_access_token' );
-        $branch = get_option( 'wp2static_gitlab_private_branch' );
-
-        // Get current files in repository
-        $existing_files = $this->getExistingFiles( $gitlab_url, $project_id, $access_token, $branch );
-        
-        // Get list of local file paths
-        $local_file_paths = array_map( function( $file ) {
-            return $file['remote_path'];
-        }, $local_files );
-
-        // Find files that exist in repository but not locally
-        $files_to_delete = array_diff( $existing_files, $local_file_paths );
-
-        if ( empty( $files_to_delete ) ) {
-            // No orphaned files to clean up (silent)
-            return;
-        }
-
-        WsLog::l( 'Removing ' . count( $files_to_delete ) . ' orphaned files from GitLab' );
-
-        $this->deleteFilesFromRepository( $files_to_delete, $gitlab_url, $project_id, $access_token, $branch );
-    }
-
-    private function deleteFilesFromRepository( array $files_to_delete, string $gitlab_url, string $project_id, string $access_token, string $branch ) : void {
-        $commit_message = get_option( 'wp2static_gitlab_private_commit_message' );
-        $author_name = get_option( 'wp2static_gitlab_private_author_name' );
-        $author_email = get_option( 'wp2static_gitlab_private_author_email' );
-
-        $actions = [];
-        
-        foreach ( $files_to_delete as $file_path ) {
-            $actions[] = [
-                'action' => 'delete',
-                'file_path' => $file_path,
-            ];
-        }
-
-        $api_url = $gitlab_url . '/api/v4/projects/' . urlencode( $project_id ) . '/repository/commits';
-        
-        $payload = [
-            'branch' => $branch,
-            'commit_message' => 'Remove orphaned files (' . count( $actions ) . ' files)',
-            'actions' => $actions,
-            'author_name' => $author_name,
-            'author_email' => $author_email,
-        ];
-
-        $response = $this->makeApiRequest( $api_url, $payload, $access_token );
-        
-        if ( $response ) {
-            WsLog::l( "Successfully removed orphaned files from GitLab" );
-        } else {
-            WsLog::l( "Failed to delete orphaned files from GitLab" );
-        }
-    }
-
-    private function makeApiRequest( string $url, array $payload, string $access_token ) {
-        $api_timeout = 120; // A reasonable default
-        
-        $json_body = wp_json_encode( $payload );
-        if ( json_last_error() !== JSON_ERROR_NONE ) {
-            WsLog::l( 'JSON encoding error: ' . json_last_error_msg() );
-            return false;
-        }
-        
-        $args = [
-            'method' => 'POST',
-            'headers' => [
-                'Content-Type' => 'application/json',
-                'Authorization' => 'Bearer ' . $access_token,
-            ],
-            'body' => $json_body,
-            'timeout' => $api_timeout,
-        ];
-
-        $response = wp_remote_request( $url, $args );
-
-        if ( is_wp_error( $response ) ) {
-            $error_message = $response->get_error_message();
-            WsLog::l( 'GitLab API request failed: ' . $error_message );
-            return false;
-        }
-
-        $response_code = wp_remote_retrieve_response_code( $response );
-        $response_body = wp_remote_retrieve_body( $response );
-
-        if ( $response_code >= 200 && $response_code < 300 ) {
-            return json_decode( $response_body, true );
-        } else {
-            $error_msg = "GitLab API error (HTTP $response_code): $response_body";
-            WsLog::l( $error_msg );
-            return false;
-        }
-    }
 } 

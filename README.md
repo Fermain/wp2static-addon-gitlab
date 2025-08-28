@@ -5,9 +5,9 @@ Deploy your static WordPress site to a private GitLab repository using the GitLa
 ## Features
 
 - 🔒 **Private GitLab Support** - Works with both GitLab.com and self-hosted GitLab instances
-- 🚀 **API-Based Deployment** - Uses GitLab API for reliable file uploads (no git operations required)
-- 📦 **Batch Processing** - Deploys files in batches to respect API rate limits
-- 🔄 **Incremental Deployments** - Only uploads changed files using WP2Static's deploy cache
+- 🚀 **Git-Based Deployment** - Clones the repository, commits site output, and pushes to the target branch
+- 📂 **Deploy Subdirectory** - Deploy into a scoped subdirectory (default: `public/`) to protect CI and repo root files
+- 🔄 **Incremental Deployments** - Git handles changes; only modified files are committed
 - ☸️ **Kubernetes Ready** - Works in internal Kubernetes environments without internet exposure
 - 🛠️ **CI/CD Integration** - Triggers your GitLab CI/CD pipelines automatically
 - 🧪 **Connection Testing** - Built-in connection test to verify configuration
@@ -71,6 +71,7 @@ Navigate to **WP2Static → GitLab Private** and fill in:
 - **Project ID**: The numeric project ID from step 2
 - **Access Token**: The personal access token from step 1
 - **Target Branch**: Branch to deploy to (e.g., `main`, `deploy`, `gh-pages`)
+- **Deploy Subdirectory**: Subdirectory within the repo to receive the site (default: `public`)
 - **Commit Message**: Message for deployment commits
 - **Author Name & Email**: Git commit author information
 
@@ -112,20 +113,21 @@ wp wp2static deploy
 ## How It Works
 
 1. **File Processing**: WP2Static generates static files in `wp-content/uploads/wp2static-processed-site/`
-2. **Change Detection**: The add-on compares files against the deploy cache to find changes
-3. **Batch Upload**: Files are uploaded to GitLab in batches of 20 using the Repository Commits API
-4. **Git Commit**: All files in a batch are committed together with a descriptive message
+2. **Repo Checkout**: The add-on shallow clones the target repository and prepares the target branch
+3. **Scoped Sync**: The add-on copies the processed site into the configured deploy subdirectory (default `public/`)
+   - Optional: If "Delete Orphaned Files" is enabled, the deploy subdirectory is cleaned before copy
+4. **Git Commit & Push**: Changes are committed and pushed to the target branch
 5. **CI Trigger**: Your GitLab CI/CD pipeline detects the new commit and can automatically deploy
 
-## API Details
+## Git Operations
 
-This add-on uses GitLab's [Repository Commits API](https://docs.gitlab.com/ee/api/commits.html#create-a-commit-with-multiple-files-and-actions) to upload files:
+The add-on performs standard git operations server-side:
 
-- **Endpoint**: `POST /api/v4/projects/:id/repository/commits`
-- **Authentication**: Bearer token (Personal Access Token)
-- **File Encoding**: Base64 for binary safety
-- **Batch Size**: 20 files per commit (configurable)
-- **Rate Limiting**: 1-second delay between batches
+- Shallow clone via HTTPS with token credential embedding
+- Ensure committer name/email are set locally
+- Create or fast-forward the target branch
+- Copy site output into the deploy subdirectory
+- `git add -A`, `git commit` (no-op if nothing changed), and `git push`
 
 ## Kubernetes Deployment
 
@@ -165,10 +167,9 @@ Production Deployment
 
 ### Deployment Issues
 
-**"Failed to deploy files to GitLab"**
-- Check GitLab API rate limits
-- Verify branch exists in your repository
-- Ensure token has write access to the target branch
+**"git push failed"**
+- Verify token has write access to the target branch (Maintainer or higher if protected)
+- Confirm the repository allows HTTPS pushes with access tokens (`oauth2` with PAT is supported)
 
 **"No files to deploy"**
 - Run WP2Static crawl first to generate static files
@@ -202,17 +203,28 @@ GitLab Private deployment completed
 
 ## Limitations
 
-- **File Size**: GitLab API has file size limits (typically 100MB per file)
-- **Batch Size**: Currently fixed at 20 files per commit
-- **Rate Limiting**: Respects GitLab API rate limits with built-in delays
-- **Binary Files**: All files are base64 encoded for API safety
+- **Server Git Required**: The WordPress environment must have `git` available in `PATH`
+- **Deploy Scope**: Deletions (if enabled) are limited to the deploy subdirectory
+- **Large Repos**: Shallow clones mitigate cost, but very large histories may still impact performance
+
+## QA Checklist
+
+- Connection test succeeds and shows project path and default branch
+- `git --version` available on server; shallow clone succeeds
+- Push to target branch works with access token (Maintainer or higher if protected)
+- Deploy subdirectory behavior:
+  - Delete Orphaned Files OFF: only additions/updates within `public/`
+  - Delete Orphaned Files ON: `public/` cleaned before copy; files outside `public/` untouched
+- Commit author name/email reflect configured values
+- Token is masked in logs and error messages
+- No-op deploy logs “Nothing to commit” and push succeeds without error
+- CI/CD pipeline triggers on commit and reads from `public/`
 
 ## Contributing
 
 This add-on follows WP2Static's add-on architecture. Key files:
 
 - `wp2static-addon-gitlab-private.php` - Main plugin file
-- `src/GitLabPrivateOptions.php` - Options management
 - `src/GitLabPrivateDeployer.php` - Core deployment logic
 - `views/options-page.php` - Admin interface
 - `uninstall.php` - Cleanup script
