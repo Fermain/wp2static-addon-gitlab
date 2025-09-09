@@ -321,7 +321,7 @@ class GitLabPrivateDeployer {
             1 => [ 'pipe', 'w' ],
             2 => [ 'pipe', 'w' ],
         ];
-        $env = [ 'LC_ALL' => 'C', 'PATH' => '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' ];
+        $env = [ 'LC_ALL' => 'C', 'PATH' => '/usr/local/bin:/usr/bin:/bin' ];
         $proc = proc_open( $argv, $descriptors, $pipes, null, $env );
         if ( ! is_resource( $proc ) ) {
             if ( $throw_on_error ) { throw new \Exception( 'Failed to start process' ); }
