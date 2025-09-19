@@ -250,7 +250,7 @@ class GitLabPrivateDeployer {
         // Copy processed site into deploy subdir
         $copied = $this->copyTree( $processed_site_path, $target_root );
         if ( $copied === 0 ) {
-            WsLog::l( 'No files to copy; aborting commit' );
+            WsLog::l( '[GITLAB_PRIVATE] NO_CHANGES: No files to copy; skipping commit' );
         }
 
         // Commit and push
@@ -265,6 +265,7 @@ class GitLabPrivateDeployer {
         if ( $push['code'] !== 0 ) {
             $out = $push['out'];
             if ( is_string( $mask ) && $mask !== '' ) { $out = str_replace( $mask, '***', $out ); }
+            WsLog::l( '[GITLAB_PRIVATE] PUSH_FAILED: ' . $out );
             throw new \Exception( 'git push failed: ' . $out );
         }
 
@@ -272,7 +273,9 @@ class GitLabPrivateDeployer {
         $this->rrmdir( $repo_dir );
 
         if ( $nothingToCommit ) {
-            WsLog::l( 'Nothing to commit (no changes)' );
+            WsLog::l( '[GITLAB_PRIVATE] NO_CHANGES: Nothing to commit' );
+        } else {
+            WsLog::l( '[GITLAB_PRIVATE] COMMIT_OK: Changes committed and pushed' );
         }
     }
 
