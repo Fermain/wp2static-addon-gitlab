@@ -43,6 +43,8 @@ class GitLabPrivateDeployer {
             'gitlabAuthorEmail' => get_option( 'wp2static_gitlab_private_author_email', 'noreply@wp2static.com' ),
             'gitlabDeleteOrphanedFiles' => get_option( 'wp2static_gitlab_private_delete_orphaned_files', false ),
             'gitlabVerboseLogging' => get_option( 'wp2static_gitlab_private_verbose_logging', false ),
+            'gitlabDeployStrategy' => get_option( 'wp2static_gitlab_private_deploy_strategy', 'direct' ),
+            'gitlabTargetBranch' => get_option( 'wp2static_gitlab_private_target_branch', 'main' ),
         ];
         
         include WP2STATIC_GITLAB_PRIVATE_PATH . 'views/options-page.php';
@@ -70,6 +72,10 @@ class GitLabPrivateDeployer {
         update_option( 'wp2static_gitlab_private_author_email', sanitize_email( $_POST['gitlabAuthorEmail'] ?? '' ) );
         update_option( 'wp2static_gitlab_private_delete_orphaned_files', isset( $_POST['gitlabDeleteOrphanedFiles'] ) ? true : false );
         update_option( 'wp2static_gitlab_private_verbose_logging', isset( $_POST['gitlabVerboseLogging'] ) ? true : false );
+        $deploy_strategy = sanitize_text_field( $_POST['gitlabDeployStrategy'] ?? 'direct' );
+        if ( ! in_array( $deploy_strategy, [ 'direct', 'merge_request' ], true ) ) { $deploy_strategy = 'direct'; }
+        update_option( 'wp2static_gitlab_private_deploy_strategy', $deploy_strategy );
+        update_option( 'wp2static_gitlab_private_target_branch', sanitize_text_field( $_POST['gitlabTargetBranch'] ?? 'main' ) );
         
         wp_redirect( 
             add_query_arg( 
@@ -222,17 +228,32 @@ class GitLabPrivateDeployer {
         $this->runCmd( [ 'git', '-C', $repo_dir, 'config', 'user.name', $author_name ], $mask );
         $this->runCmd( [ 'git', '-C', $repo_dir, 'config', 'user.email', $author_email ], $mask );
 
-        // Prepare branch
-        $branch = get_option( 'wp2static_gitlab_private_branch', 'main' );
-        if ( ! is_string( $branch ) || $branch === '' ) {
-            $branch = is_string( $project['default_branch'] ?? '' ) && $project['default_branch'] !== '' ? $project['default_branch'] : 'main';
+        // Prepare branch based on deploy strategy
+        $deploy_strategy = get_option( 'wp2static_gitlab_private_deploy_strategy', 'direct' );
+        $push_branch = get_option( 'wp2static_gitlab_private_branch', 'main' );
+        if ( ! is_string( $push_branch ) || $push_branch === '' ) {
+            $push_branch = is_string( $project['default_branch'] ?? '' ) && $project['default_branch'] !== '' ? $project['default_branch'] : 'main';
         }
-        $has_remote = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $branch ], $mask );
-        if ( $has_remote['code'] === 0 && trim( $has_remote['out'] ) !== '' ) {
-            $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', '--depth', '1', 'origin', $branch . ':refs/remotes/origin/' . $branch ], $mask );
-            $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $branch, 'origin/' . $branch ], $mask );
+        
+        if ( $deploy_strategy === 'merge_request' ) {
+            $mr_target_branch = get_option( 'wp2static_gitlab_private_target_branch', 'main' );
+            if ( ! is_string( $mr_target_branch ) || $mr_target_branch === '' ) { $mr_target_branch = 'main'; }
+            $has_target = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $mr_target_branch ], $mask );
+            if ( $has_target['code'] === 0 && trim( $has_target['out'] ) !== '' ) {
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', '--depth', '1', 'origin', $mr_target_branch . ':refs/remotes/origin/' . $mr_target_branch ], $mask );
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $mr_target_branch ], $mask );
+            } else {
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch ], $mask );
+            }
         } else {
-            $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $branch ], $mask );
+            $mr_target_branch = null;
+            $has_remote = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $push_branch ], $mask );
+            if ( $has_remote['code'] === 0 && trim( $has_remote['out'] ) !== '' ) {
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', '--depth', '1', 'origin', $push_branch . ':refs/remotes/origin/' . $push_branch ], $mask );
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $push_branch ], $mask );
+            } else {
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch ], $mask );
+            }
         }
 
         // Scope-limited delete within deploy subdirectory
@@ -261,7 +282,21 @@ class GitLabPrivateDeployer {
         $commit = $this->runCmd( [ 'git', '-C', $repo_dir, 'commit', '-m', $message, '--author=' . $author_name . ' <' . $author_email . '>' ], $mask, false );
         $nothingToCommit = ( strpos( $commit['out'], 'nothing to commit' ) !== false );
 
-        $push = $this->runCmd( [ 'git', '-C', $repo_dir, 'push', '-u', 'origin', 'HEAD:refs/heads/' . $branch ], $mask, false );
+        if ( $deploy_strategy === 'merge_request' ) {
+            $push_cmd = [
+                'git', '-C', $repo_dir, 'push', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch,
+                '-o', 'merge_request.create',
+                '-o', 'merge_request.target=' . $mr_target_branch,
+                '-o', 'merge_request.merge_when_pipeline_succeeds',
+                '-o', 'merge_request.remove_source_branch',
+                '-o', 'merge_request.title=' . $message,
+            ];
+            WsLog::l( '[GITLAB_PRIVATE] Creating merge request from ' . $push_branch . ' to ' . $mr_target_branch );
+        } else {
+            $push_cmd = [ 'git', '-C', $repo_dir, 'push', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch ];
+        }
+        
+        $push = $this->runCmd( $push_cmd, $mask, false );
         if ( $push['code'] !== 0 ) {
             $out = $push['out'];
             if ( is_string( $mask ) && $mask !== '' ) { $out = str_replace( $mask, '***', $out ); }

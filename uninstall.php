@@ -30,6 +30,8 @@ $options = [
     'wp2static_gitlab_private_author_email',
     'wp2static_gitlab_private_delete_orphaned_files',
     'wp2static_gitlab_private_verbose_logging',
+    'wp2static_gitlab_private_deploy_strategy',
+    'wp2static_gitlab_private_target_branch',
 ];
 foreach ( $options as $opt ) {
     delete_option( $opt );

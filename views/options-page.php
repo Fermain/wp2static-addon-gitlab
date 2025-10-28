@@ -116,7 +116,40 @@ if ( isset( $_GET['test_result'] ) && isset( $_GET['test_message'] ) ) {
                 
                 <tr>
                     <th scope="row">
-                        <label for="gitlabBranch">Target Branch</label>
+                        <label for="gitlabDeployStrategy">Deploy Strategy</label>
+                    </th>
+                    <td>
+                        <fieldset>
+                            <label>
+                                <input 
+                                    type="radio" 
+                                    name="gitlabDeployStrategy" 
+                                    value="direct"
+                                    <?php checked( $options['gitlabDeployStrategy'], 'direct' ); ?>
+                                />
+                                <strong>Direct Push</strong> - Push directly to branch
+                            </label>
+                            <br>
+                            <label style="margin-top: 10px; display: inline-block;">
+                                <input 
+                                    type="radio" 
+                                    name="gitlabDeployStrategy" 
+                                    value="merge_request"
+                                    <?php checked( $options['gitlabDeployStrategy'], 'merge_request' ); ?>
+                                />
+                                <strong>Merge Request</strong> - Create MR with auto-merge when pipeline succeeds
+                            </label>
+                        </fieldset>
+                        <p class="description">
+                            <strong>Direct Push:</strong> Commits are pushed directly to the branch (traditional behavior).<br>
+                            <strong>Merge Request:</strong> Creates an MR that auto-merges when GitLab CI/CD pipeline succeeds, then removes the source branch.
+                        </p>
+                    </td>
+                </tr>
+                
+                <tr>
+                    <th scope="row">
+                        <label for="gitlabBranch">Branch</label>
                     </th>
                     <td>
                         <input 
@@ -126,7 +159,23 @@ if ( isset( $_GET['test_result'] ) && isset( $_GET['test_message'] ) ) {
                             value="<?php echo esc_attr( $options['gitlabBranch'] ); ?>" 
                             class="regular-text"
                         />
-                        <p class="description">Branch to deploy to (default: main)</p>
+                        <p class="description">The branch to push to (e.g., <code>main</code> for direct push, <code>wp2static-deploy</code> for MR mode)</p>
+                    </td>
+                </tr>
+                
+                <tr id="targetBranchRow" style="<?php echo $options['gitlabDeployStrategy'] === 'merge_request' ? '' : 'display: none;'; ?>">
+                    <th scope="row">
+                        <label for="gitlabTargetBranch">MR Target Branch</label>
+                    </th>
+                    <td>
+                        <input 
+                            type="text" 
+                            name="gitlabTargetBranch" 
+                            id="gitlabTargetBranch" 
+                            value="<?php echo esc_attr( $options['gitlabTargetBranch'] ); ?>" 
+                            class="regular-text"
+                        />
+                        <p class="description">The branch the merge request will target (typically <code>main</code> or <code>master</code>)</p>
                     </td>
                 </tr>
                 
@@ -257,4 +306,26 @@ if ( isset( $_GET['test_result'] ) && isset( $_GET['test_message'] ) ) {
     border-top: 1px solid #ddd;
     padding-top: 20px;
 }
-</style> 
+</style>
+
+<script>
+(function() {
+    const strategyRadios = document.querySelectorAll('input[name="gitlabDeployStrategy"]');
+    const targetBranchRow = document.getElementById('targetBranchRow');
+    
+    function toggleTargetBranchVisibility() {
+        const selectedStrategy = document.querySelector('input[name="gitlabDeployStrategy"]:checked');
+        if (selectedStrategy && selectedStrategy.value === 'merge_request') {
+            targetBranchRow.style.display = '';
+        } else {
+            targetBranchRow.style.display = 'none';
+        }
+    }
+    
+    strategyRadios.forEach(function(radio) {
+        radio.addEventListener('change', toggleTargetBranchVisibility);
+    });
+    
+    toggleTargetBranchVisibility();
+})();
+</script> 

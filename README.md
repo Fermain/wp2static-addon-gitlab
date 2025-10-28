@@ -6,6 +6,7 @@ Deploy your static WordPress site to a private GitLab repository using the GitLa
 
 - 🔒 **Private GitLab Support** - Works with both GitLab.com and self-hosted GitLab instances
 - 🚀 **Git-Based Deployment** - Clones the repository, commits site output, and pushes to the target branch
+- 🔀 **Merge Request Mode** - Optional MR workflow with auto-merge when CI pipeline succeeds
 - 📂 **Deploy Subdirectory** - Deploy into a scoped subdirectory (default: `public/`) to protect CI and repo root files
 - 🔄 **Incremental Deployments** - Git handles changes; only modified files are committed
 - ☸️ **Kubernetes Ready** - Works in internal Kubernetes environments without internet exposure
@@ -70,7 +71,13 @@ Navigate to **WP2Static → GitLab Private** and fill in:
   - Self-hosted: `https://gitlab.yourcompany.com`
 - **Project ID**: The numeric project ID from step 2
 - **Access Token**: The personal access token from step 1
-- **Target Branch**: Branch to deploy to (e.g., `main`, `deploy`, `gh-pages`)
+- **Deploy Strategy**: Choose how deployments are pushed
+  - **Direct Push** (default): Commits pushed directly to the branch
+  - **Merge Request**: Creates MR that auto-merges when CI pipeline succeeds
+- **Branch**: The branch to push to
+  - Direct mode: typically `main` or `master`
+  - MR mode: typically `wp2static-deploy` or similar working branch
+- **MR Target Branch** (MR mode only): The branch the merge request will target (typically `main`)
 - **Deploy Subdirectory**: Subdirectory within the repo to receive the site (default: `public`)
 - **Commit Message**: Message for deployment commits
 - **Author Name & Email**: Git commit author information
@@ -112,12 +119,32 @@ wp wp2static deploy
 
 ## How It Works
 
+### Direct Push Mode (Default)
+
 1. **File Processing**: WP2Static generates static files in `wp-content/uploads/wp2static-processed-site/`
-2. **Repo Checkout**: The add-on shallow clones the target repository and prepares the target branch
+2. **Repo Checkout**: The add-on shallow clones the repository and checks out the configured branch
 3. **Scoped Sync**: The add-on copies the processed site into the configured deploy subdirectory (default `public/`)
    - Optional: If "Delete Orphaned Files" is enabled, the deploy subdirectory is cleaned before copy
-4. **Git Commit & Push**: Changes are committed and pushed to the target branch
+4. **Git Commit & Push**: Changes are committed and pushed directly to the branch (e.g., `main`)
 5. **CI Trigger**: Your GitLab CI/CD pipeline detects the new commit and can automatically deploy
+
+### Merge Request Mode
+
+1. **File Processing**: WP2Static generates static files in `wp-content/uploads/wp2static-processed-site/`
+2. **Repo Checkout**: The add-on shallow clones the repository and creates/updates the push branch from the MR target branch
+3. **Scoped Sync**: The add-on copies the processed site into the configured deploy subdirectory (default `public/`)
+   - Optional: If "Delete Orphaned Files" is enabled, the deploy subdirectory is cleaned before copy
+4. **Git Commit & Push with MR**: Changes are committed and pushed to the push branch (e.g., `wp2static-deploy`) with GitLab push options:
+   - Creates a merge request targeting the MR target branch (e.g., `main`)
+   - Sets auto-merge when CI/CD pipeline succeeds
+   - Automatically removes the push branch after merge
+5. **CI/CD Pipeline**: GitLab runs the pipeline on the MR; if it passes, the MR auto-merges into the target branch
+6. **Deployment**: Your pipeline can deploy the merged changes to production
+
+**Example Configuration for MR Mode:**
+- Branch: `wp2static-deploy` (ephemeral, gets recreated each deployment)
+- MR Target Branch: `main` (your protected production branch)
+- Result: Push to `wp2static-deploy` → Creates MR to `main` → Auto-merges on CI success → Branch deleted
 
 ## Git Operations
 
