@@ -245,6 +245,11 @@ class GitLabPrivateDeployer {
             } else {
                 $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch ], $mask );
             }
+            $has_push_branch = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $push_branch ], $mask );
+            if ( $has_push_branch['code'] === 0 && trim( $has_push_branch['out'] ) !== '' ) {
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', 'origin', $push_branch . ':refs/remotes/origin/' . $push_branch ], $mask );
+                $this->verboseLog( '[GITLAB_PRIVATE] Push branch exists remotely, fetched for --force-with-lease' );
+            }
         } else {
             $mr_target_branch = null;
             $has_remote = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $push_branch ], $mask );
@@ -284,7 +289,7 @@ class GitLabPrivateDeployer {
 
         if ( $deploy_strategy === 'merge_request' ) {
             $push_cmd = [
-                'git', '-C', $repo_dir, 'push', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch,
+                'git', '-C', $repo_dir, 'push', '--force-with-lease', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch,
                 '-o', 'merge_request.create',
                 '-o', 'merge_request.target=' . $mr_target_branch,
                 '-o', 'merge_request.merge_when_pipeline_succeeds',

@@ -144,7 +144,9 @@ wp wp2static deploy
 **Example Configuration for MR Mode:**
 - Branch: `wp2static-deploy` (ephemeral, gets recreated each deployment)
 - MR Target Branch: `main` (your protected production branch)
-- Result: Push to `wp2static-deploy` → Creates MR to `main` → Auto-merges on CI success → Branch deleted
+- Result: Push to `wp2static-deploy` → Creates/updates MR to `main` → Auto-merges on CI success → Branch deleted
+
+**Note:** In MR mode, the push uses `--force-with-lease` to safely handle cases where the branch already exists from a previous deployment or failed run, while protecting against accidentally overwriting unexpected changes.
 
 ## Git Operations
 
