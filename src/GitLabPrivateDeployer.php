@@ -238,17 +238,23 @@ class GitLabPrivateDeployer {
         if ( $deploy_strategy === 'merge_request' ) {
             $mr_target_branch = get_option( 'wp2static_gitlab_private_target_branch', 'main' );
             if ( ! is_string( $mr_target_branch ) || $mr_target_branch === '' ) { $mr_target_branch = 'main'; }
-            $has_target = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $mr_target_branch ], $mask );
-            if ( $has_target['code'] === 0 && trim( $has_target['out'] ) !== '' ) {
-                $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', '--depth', '1', 'origin', $mr_target_branch . ':refs/remotes/origin/' . $mr_target_branch ], $mask );
-                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $mr_target_branch ], $mask );
-            } else {
-                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch ], $mask );
-            }
+            
             $has_push_branch = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $push_branch ], $mask );
-            if ( $has_push_branch['code'] === 0 && trim( $has_push_branch['out'] ) !== '' ) {
+            $push_branch_exists = ( $has_push_branch['code'] === 0 && trim( $has_push_branch['out'] ) !== '' );
+            
+            if ( $push_branch_exists ) {
                 $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', 'origin', $push_branch . ':refs/remotes/origin/' . $push_branch ], $mask );
-                $this->verboseLog( '[GITLAB_PRIVATE] Push branch exists remotely, fetched for --force-with-lease' );
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $push_branch ], $mask );
+                $this->verboseLog( '[GITLAB_PRIVATE] Building on existing push branch' );
+            } else {
+                $has_target = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $mr_target_branch ], $mask );
+                if ( $has_target['code'] === 0 && trim( $has_target['out'] ) !== '' ) {
+                    $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', '--depth', '1', 'origin', $mr_target_branch . ':refs/remotes/origin/' . $mr_target_branch ], $mask );
+                    $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $mr_target_branch ], $mask );
+                } else {
+                    $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch ], $mask );
+                }
+                $this->verboseLog( '[GITLAB_PRIVATE] Creating new push branch from target' );
             }
         } else {
             $mr_target_branch = null;
