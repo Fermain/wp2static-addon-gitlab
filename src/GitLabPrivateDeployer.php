@@ -43,8 +43,7 @@ class GitLabPrivateDeployer {
             'gitlabAuthorEmail' => get_option( 'wp2static_gitlab_private_author_email', 'noreply@wp2static.com' ),
             'gitlabDeleteOrphanedFiles' => get_option( 'wp2static_gitlab_private_delete_orphaned_files', false ),
             'gitlabVerboseLogging' => get_option( 'wp2static_gitlab_private_verbose_logging', false ),
-            'gitlabDeployStrategy' => get_option( 'wp2static_gitlab_private_deploy_strategy', 'direct' ),
-            'gitlabTargetBranch' => get_option( 'wp2static_gitlab_private_target_branch', 'main' ),
+            'gitlabTargetBranch' => get_option( 'wp2static_gitlab_private_target_branch', 'master' ),
         ];
         
         include WP2STATIC_GITLAB_PRIVATE_PATH . 'views/options-page.php';
@@ -72,10 +71,7 @@ class GitLabPrivateDeployer {
         update_option( 'wp2static_gitlab_private_author_email', sanitize_email( $_POST['gitlabAuthorEmail'] ?? '' ) );
         update_option( 'wp2static_gitlab_private_delete_orphaned_files', isset( $_POST['gitlabDeleteOrphanedFiles'] ) ? true : false );
         update_option( 'wp2static_gitlab_private_verbose_logging', isset( $_POST['gitlabVerboseLogging'] ) ? true : false );
-        $deploy_strategy = sanitize_text_field( $_POST['gitlabDeployStrategy'] ?? 'direct' );
-        if ( ! in_array( $deploy_strategy, [ 'direct', 'merge_request' ], true ) ) { $deploy_strategy = 'direct'; }
-        update_option( 'wp2static_gitlab_private_deploy_strategy', $deploy_strategy );
-        update_option( 'wp2static_gitlab_private_target_branch', sanitize_text_field( $_POST['gitlabTargetBranch'] ?? 'main' ) );
+        update_option( 'wp2static_gitlab_private_target_branch', sanitize_text_field( $_POST['gitlabTargetBranch'] ?? 'master' ) );
         
         wp_redirect( 
             add_query_arg( 
@@ -228,43 +224,31 @@ class GitLabPrivateDeployer {
         $this->runCmd( [ 'git', '-C', $repo_dir, 'config', 'user.name', $author_name ], $mask );
         $this->runCmd( [ 'git', '-C', $repo_dir, 'config', 'user.email', $author_email ], $mask );
 
-        // Prepare branch based on deploy strategy
-        $deploy_strategy = get_option( 'wp2static_gitlab_private_deploy_strategy', 'direct' );
+        // Prepare branches
         $push_branch = get_option( 'wp2static_gitlab_private_branch', 'main' );
         if ( ! is_string( $push_branch ) || $push_branch === '' ) {
             $push_branch = is_string( $project['default_branch'] ?? '' ) && $project['default_branch'] !== '' ? $project['default_branch'] : 'main';
         }
         
-        if ( $deploy_strategy === 'merge_request' ) {
-            $mr_target_branch = get_option( 'wp2static_gitlab_private_target_branch', 'main' );
-            if ( ! is_string( $mr_target_branch ) || $mr_target_branch === '' ) { $mr_target_branch = 'main'; }
-            
-            $has_push_branch = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $push_branch ], $mask );
-            $push_branch_exists = ( $has_push_branch['code'] === 0 && trim( $has_push_branch['out'] ) !== '' );
-            
-            if ( $push_branch_exists ) {
-                $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', 'origin', $push_branch . ':refs/remotes/origin/' . $push_branch ], $mask );
-                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $push_branch ], $mask );
-                $this->verboseLog( '[GITLAB_PRIVATE] Building on existing push branch' );
-            } else {
-                $has_target = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $mr_target_branch ], $mask );
-                if ( $has_target['code'] === 0 && trim( $has_target['out'] ) !== '' ) {
-                    $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', '--depth', '1', 'origin', $mr_target_branch . ':refs/remotes/origin/' . $mr_target_branch ], $mask );
-                    $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $mr_target_branch ], $mask );
-                } else {
-                    $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch ], $mask );
-                }
-                $this->verboseLog( '[GITLAB_PRIVATE] Creating new push branch from target' );
-            }
-        } else {
-            $mr_target_branch = null;
-            $has_remote = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $push_branch ], $mask );
-            if ( $has_remote['code'] === 0 && trim( $has_remote['out'] ) !== '' ) {
-                $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', '--depth', '1', 'origin', $push_branch . ':refs/remotes/origin/' . $push_branch ], $mask );
-                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $push_branch ], $mask );
+        $target_branch = get_option( 'wp2static_gitlab_private_target_branch', 'master' );
+        if ( ! is_string( $target_branch ) || $target_branch === '' ) { $target_branch = 'master'; }
+        
+        $has_push_branch = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $push_branch ], $mask );
+        $branch_is_new = ! ( $has_push_branch['code'] === 0 && trim( $has_push_branch['out'] ) !== '' );
+        
+        if ( $branch_is_new ) {
+            WsLog::l( '[GITLAB_PRIVATE] Working branch does not exist, creating from target' );
+            $has_target = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $target_branch ], $mask );
+            if ( $has_target['code'] === 0 && trim( $has_target['out'] ) !== '' ) {
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', '--depth', '1', 'origin', $target_branch . ':refs/remotes/origin/' . $target_branch ], $mask );
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $target_branch ], $mask );
             } else {
                 $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch ], $mask );
             }
+        } else {
+            WsLog::l( '[GITLAB_PRIVATE] Working branch exists, building on it' );
+            $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', 'origin', $push_branch . ':refs/remotes/origin/' . $push_branch ], $mask );
+            $this->runCmd( [ 'git', '-C', $repo_dir, 'checkout', '-B', $push_branch, 'origin/' . $push_branch ], $mask );
         }
 
         // Scope-limited delete within deploy subdirectory
@@ -293,36 +277,37 @@ class GitLabPrivateDeployer {
         $commit = $this->runCmd( [ 'git', '-C', $repo_dir, 'commit', '-m', $message, '--author=' . $author_name . ' <' . $author_email . '>' ], $mask, false );
         $nothingToCommit = ( strpos( $commit['out'], 'nothing to commit' ) !== false );
 
-        if ( $deploy_strategy === 'merge_request' ) {
-            $push_cmd = [
-                'git', '-C', $repo_dir, 'push', '--force-with-lease', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch,
-                '-o', 'merge_request.create',
-                '-o', 'merge_request.target=' . $mr_target_branch,
-                '-o', 'merge_request.merge_when_pipeline_succeeds',
-                '-o', 'merge_request.remove_source_branch',
-                '-o', 'merge_request.title=' . $message,
-            ];
-            WsLog::l( '[GITLAB_PRIVATE] Creating merge request from ' . $push_branch . ' to ' . $mr_target_branch );
+        if ( ! $nothingToCommit ) {
+            if ( $branch_is_new ) {
+                $push_cmd = [
+                    'git', '-C', $repo_dir, 'push', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch,
+                    '-o', 'merge_request.create',
+                    '-o', 'merge_request.target=' . $target_branch,
+                    '-o', 'merge_request.merge_when_pipeline_succeeds',
+                    '-o', 'merge_request.remove_source_branch',
+                    '-o', 'merge_request.title=' . $message,
+                ];
+                WsLog::l( '[GITLAB_PRIVATE] Pushing new branch and creating MR to ' . $target_branch );
+            } else {
+                $push_cmd = [ 'git', '-C', $repo_dir, 'push', '--force-with-lease', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch ];
+                WsLog::l( '[GITLAB_PRIVATE] Updating existing branch (MR will update if open)' );
+            }
+            
+            $push = $this->runCmd( $push_cmd, $mask, false );
+            if ( $push['code'] !== 0 ) {
+                $out = $push['out'];
+                if ( is_string( $mask ) && $mask !== '' ) { $out = str_replace( $mask, '***', $out ); }
+                WsLog::l( '[GITLAB_PRIVATE] PUSH_FAILED: ' . $out );
+                throw new \Exception( 'git push failed: ' . $out );
+            }
+            
+            WsLog::l( '[GITLAB_PRIVATE] COMMIT_OK: Changes committed and pushed' );
         } else {
-            $push_cmd = [ 'git', '-C', $repo_dir, 'push', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch ];
-        }
-        
-        $push = $this->runCmd( $push_cmd, $mask, false );
-        if ( $push['code'] !== 0 ) {
-            $out = $push['out'];
-            if ( is_string( $mask ) && $mask !== '' ) { $out = str_replace( $mask, '***', $out ); }
-            WsLog::l( '[GITLAB_PRIVATE] PUSH_FAILED: ' . $out );
-            throw new \Exception( 'git push failed: ' . $out );
+            WsLog::l( '[GITLAB_PRIVATE] NO_CHANGES: Nothing to commit, skipping push' );
         }
 
         // Cleanup
         $this->rrmdir( $repo_dir );
-
-        if ( $nothingToCommit ) {
-            WsLog::l( '[GITLAB_PRIVATE] NO_CHANGES: Nothing to commit' );
-        } else {
-            WsLog::l( '[GITLAB_PRIVATE] COMMIT_OK: Changes committed and pushed' );
-        }
     }
 
     private function getSettings() : array {

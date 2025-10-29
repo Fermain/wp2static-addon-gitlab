@@ -7,22 +7,22 @@ This repository includes an automated GitHub Actions workflow that creates relea
 ### 1. Update Version Numbers
 
 Make sure the version is updated in:
-- `wp2static.php` (Plugin header: `Version: X.Y.Z`)
-- `wp2static.php` (Constant: `WP2STATIC_VERSION`)
+- `wp2static-addon-gitlab-private.php` (Plugin header: `Version: X.Y.Z`)
+- `wp2static-addon-gitlab-private.php` (Constant: `WP2STATIC_GITLAB_PRIVATE_VERSION`)
 
 ### 2. Commit and Push Changes
 
 ```bash
 git add .
-git commit -m "Bump version to X.Y.Z"
-git push origin master
+git commit -m "Release v1.6.0"
+git push origin main
 ```
 
 ### 3. Create and Push Version Tag
 
 ```bash
-git tag v7.2.1
-git push origin v7.2.1
+git tag v1.6.0
+git push origin v1.6.0
 ```
 
 ### 4. Automatic Release Creation
@@ -40,20 +40,18 @@ The GitHub Actions workflow will automatically:
 ## What Gets Included in the ZIP
 
 ✅ **Included:**
-- `wp2static.php` (main plugin file)
-- `src/` directory (plugin classes)
-- `views/` directory (admin templates)
-- `vendor/` directory (dependencies)
+- `wp2static-addon-gitlab-private.php` (main plugin file)
+- `src/` directory (GitLabPrivateDeployer class)
+- `views/` directory (admin options page)
 - `uninstall.php`
+- `README.md`
 
 ❌ **Excluded:**
 - `.git*` files and directories
 - `.github/` (workflows)
-- `composer.json/lock` (development files)
-- `phpunit.xml*` (testing config)
-- `tests/` directory
-- Build artifacts and OS files
-- Development documentation
+- `.DS_Store` files
+- `dist/` (build artifacts)
+- `scripts/` directory
 
 ## Release Notes
 
@@ -89,7 +87,7 @@ cd build && zip -r ../test-release.zip wp2static/
 ### Version Mismatch Error
 If the workflow fails with "Version mismatch", ensure:
 - The git tag matches the plugin header version exactly
-- Both `Version: X.Y.Z` and `WP2STATIC_VERSION` are updated
+- Both `Version: X.Y.Z` and `WP2STATIC_GITLAB_PRIVATE_VERSION` are updated
 
 ### Missing Files in ZIP
 Check the exclusion patterns in `.github/workflows/release.yml` and `.gitattributes`
@@ -101,29 +99,22 @@ The workflow uses `GITHUB_TOKEN` which is automatically provided by GitHub Actio
 
 ```bash
 # 1. Make changes and bump version
-vim wp2static.php  # Update to 7.2.1
-git add . && git commit -m "Bump version to 7.2.1"
-git push
+vim wp2static-addon-gitlab-private.php  # Update to 1.6.0
+git add . && git commit -m "Release v1.6.0"
+git push origin main
 
 # 2. Tag and release
-git tag v7.2.1
-git push origin v7.2.1
+git tag v1.6.0
+git push origin v1.6.0
 
 # 3. Check GitHub releases page for the new release
 ```
 
-The release will appear at: `https://github.com/[username]/wp2static/releases`
-
-## Development vs Production Builds
-
-- **Development**: Contains composer files, tests, and development tools
-- **Production**: Clean WordPress plugin ZIP with only runtime files
-- **Internal**: Version 7.2-internal indicates a custom build for internal use
+The release will appear at: `https://github.com/[username]/wp2static-addon-gitlab/releases`
 
 ## Version Naming Convention
 
-- **7.2-internal**: Internal development version
-- **v7.2.0**: Public release version
-- **v7.2.1**: Patch release
-- **v7.3.0**: Minor version with new features
-- **v8.0.0**: Major version with breaking changes 
+- **v1.0.0**: Initial release
+- **v1.0.1**: Patch release (bug fixes)
+- **v1.1.0**: Minor version (new features, backwards compatible)
+- **v2.0.0**: Major version (breaking changes) 
