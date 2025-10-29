@@ -289,8 +289,10 @@ class GitLabPrivateDeployer {
                 ];
                 WsLog::l( '[GITLAB_PRIVATE] Pushing new branch and creating MR to ' . $target_branch );
             } else {
-                $push_cmd = [ 'git', '-C', $repo_dir, 'push', '--force-with-lease', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch ];
-                WsLog::l( '[GITLAB_PRIVATE] Updating existing branch (MR will update if open)' );
+                $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', 'origin', $push_branch . ':refs/remotes/origin/' . $push_branch ], $mask );
+                $this->verboseLog( '[GITLAB_PRIVATE] Fetched latest state before push' );
+                $push_cmd = [ 'git', '-C', $repo_dir, 'push', '-f', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch ];
+                WsLog::l( '[GITLAB_PRIVATE] Force pushing to existing branch (MR will update if open)' );
             }
             
             $push = $this->runCmd( $push_cmd, $mask, false );
