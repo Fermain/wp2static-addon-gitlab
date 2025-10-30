@@ -236,6 +236,8 @@ class GitLabPrivateDeployer {
         $has_push_branch = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $push_branch ], $mask );
         $branch_is_new = ! ( $has_push_branch['code'] === 0 && trim( $has_push_branch['out'] ) !== '' );
         
+        WsLog::l( '[GITLAB_PRIVATE] Branch detection: ' . $push_branch . ' is ' . ( $branch_is_new ? 'NEW' : 'EXISTING' ) );
+        
         if ( $branch_is_new ) {
             WsLog::l( '[GITLAB_PRIVATE] Working branch does not exist, creating from target' );
             $has_target = $this->runCmd( [ 'git', '-C', $repo_dir, 'ls-remote', '--heads', 'origin', $target_branch ], $mask );
@@ -287,14 +289,15 @@ class GitLabPrivateDeployer {
                     '-o', 'merge_request.remove_source_branch',
                     '-o', 'merge_request.title=' . $message,
                 ];
-                WsLog::l( '[GITLAB_PRIVATE] Pushing new branch and creating MR to ' . $target_branch );
+                WsLog::l( '[GITLAB_PRIVATE] Pushing new branch "' . $push_branch . '" and creating MR to "' . $target_branch . '"' );
             } else {
                 $this->runCmd( [ 'git', '-C', $repo_dir, 'fetch', 'origin', $push_branch . ':refs/remotes/origin/' . $push_branch ], $mask );
                 $this->verboseLog( '[GITLAB_PRIVATE] Fetched latest state before push' );
                 $push_cmd = [ 'git', '-C', $repo_dir, 'push', '-f', '-u', 'origin', 'HEAD:refs/heads/' . $push_branch ];
-                WsLog::l( '[GITLAB_PRIVATE] Force pushing to existing branch (MR will update if open)' );
+                WsLog::l( '[GITLAB_PRIVATE] Force pushing to existing branch "' . $push_branch . '" (MR will update if open)' );
             }
             
+            WsLog::l( '[GITLAB_PRIVATE] Push command: git push with ' . ( $branch_is_new ? 'MR options' : 'force flag' ) );
             $push = $this->runCmd( $push_cmd, $mask, false );
             if ( $push['code'] !== 0 ) {
                 $out = $push['out'];
