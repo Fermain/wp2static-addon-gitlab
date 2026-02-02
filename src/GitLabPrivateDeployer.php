@@ -183,7 +183,41 @@ class GitLabPrivateDeployer {
             $this->validateConfiguration();
 
             // Check if a filter profile (exclude_set) is being used
+            // We check POST (UI), CLI args, and JobQueue context
             $exclude_set = strval( filter_input( INPUT_POST, 'exclude_set' ) );
+            
+            // If not in POST, check if we're in a CLI context
+            if ( empty( $exclude_set ) && defined( 'WP_CLI' ) ) {
+                global $argv;
+                if ( is_array( $argv ) ) {
+                    foreach ( $argv as $arg ) {
+                        if ( strpos( $arg, '--exclude-set=' ) === 0 ) {
+                            $exclude_set = substr( $arg, 14 );
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Check for headless/JobQueue context via WsLog
+            // When running headless, Controller::wp2staticHeadless logs "Profile run detected (set_name)"
+            if ( empty( $exclude_set ) ) {
+                global $wpdb;
+                $table_name = $wpdb->prefix . 'wp2static_log';
+                $log_entry = $wpdb->get_var(
+                    "SELECT message FROM $table_name 
+                     WHERE message LIKE 'Profile run detected (%)%' 
+                     ORDER BY id DESC LIMIT 1"
+                );
+                if ( $log_entry ) {
+                    preg_match( '/Profile run detected \(([^)]+)\)/', $log_entry, $matches );
+                    if ( isset( $matches[1] ) ) {
+                        $exclude_set = $matches[1];
+                        $this->verboseLog( "Filter profile '$exclude_set' detected from recent log entry." );
+                    }
+                }
+            }
+
             if ( ! empty( $exclude_set ) ) {
                 $this->verboseLog( "Filter profile '$exclude_set' detected for this run." );
             }
