@@ -263,9 +263,10 @@ class GitLabPrivateDeployer {
             throw new \Exception( 'Failed to create deploy subdirectory in repo: ' . $deploy_subdir );
         }
 
+        $active_filter = get_option( 'wp2static_active_filter_set' );
+
         $do_cleanup = (bool) get_option( 'wp2static_gitlab_private_delete_orphaned_files', false );
         if ( $do_cleanup ) {
-            $active_filter = get_option( 'wp2static_active_filter_set' );
             if ( ! empty( $active_filter ) ) {
                 WsLog::l( "[GITLAB_PRIVATE] Filter profile '$active_filter' is active. Skipping orphaned file deletion to prevent accidental data loss." );
             } else {
@@ -282,7 +283,8 @@ class GitLabPrivateDeployer {
         // Commit and push
         if ( ! empty( $active_filter ) ) {
             // If filtering, only stage new/modified files, NOT deletions
-            $this->runCmd( [ 'git', '-C', $repo_dir, 'add', '.' ], $mask );
+            // Note: 'git add .' stages deletions in Git 2.0+, so we use --ignore-removal
+            $this->runCmd( [ 'git', '-C', $repo_dir, 'add', '--ignore-removal', '.' ], $mask );
         } else {
             $this->runCmd( [ 'git', '-C', $repo_dir, 'add', '-A' ], $mask );
         }
