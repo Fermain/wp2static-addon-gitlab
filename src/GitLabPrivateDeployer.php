@@ -182,7 +182,13 @@ class GitLabPrivateDeployer {
             
             $this->validateConfiguration();
 
-            $this->deployViaGit( $processed_site_path );
+            // Check if a filter profile (exclude_set) is being used
+            $exclude_set = strval( filter_input( INPUT_POST, 'exclude_set' ) );
+            if ( ! empty( $exclude_set ) ) {
+                $this->verboseLog( "Filter profile '$exclude_set' detected for this run." );
+            }
+
+            $this->deployViaGit( $processed_site_path, $exclude_set );
 
             WsLog::l( 'GitLab Private deployment completed' );
         } catch ( \Exception $e ) {
@@ -191,7 +197,7 @@ class GitLabPrivateDeployer {
         }
     }
 
-    private function deployViaGit( string $processed_site_path ) : void {
+    private function deployViaGit( string $processed_site_path, string $exclude_set = '' ) : void {
         $settings = $this->getSettings();
         $project = $this->fetchProjectInfo( $settings['url'], $settings['project_id'], $settings['token'] );
         if ( empty( $project['http_url_to_repo'] ) ) {
@@ -260,9 +266,14 @@ class GitLabPrivateDeployer {
         if ( ! wp_mkdir_p( $target_root ) ) {
             throw new \Exception( 'Failed to create deploy subdirectory in repo: ' . $deploy_subdir );
         }
+
         $do_cleanup = (bool) get_option( 'wp2static_gitlab_private_delete_orphaned_files', false );
         if ( $do_cleanup ) {
-            $this->deleteDirectoryContents( $target_root );
+            if ( ! empty( $exclude_set ) ) {
+                WsLog::l( "[GITLAB_PRIVATE] Filter profile '$exclude_set' is active. Skipping orphaned file deletion to prevent accidental data loss." );
+            } else {
+                $this->deleteDirectoryContents( $target_root );
+            }
         }
 
         // Copy processed site into deploy subdir
