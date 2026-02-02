@@ -182,56 +182,18 @@ class GitLabPrivateDeployer {
             
             $this->validateConfiguration();
 
-            // Check if a filter profile (exclude_set) is being used
-            // We check POST (UI), CLI args, and JobQueue context
-            $exclude_set = strval( filter_input( INPUT_POST, 'exclude_set' ) );
-            
-            // If not in POST, check if we're in a CLI context
-            if ( empty( $exclude_set ) && defined( 'WP_CLI' ) ) {
-                global $argv;
-                if ( is_array( $argv ) ) {
-                    foreach ( $argv as $arg ) {
-                        if ( strpos( $arg, '--exclude-set=' ) === 0 ) {
-                            $exclude_set = substr( $arg, 14 );
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Check for headless/JobQueue context via WsLog
-            // When running headless, Controller::wp2staticHeadless logs "Profile run detected (set_name)"
-            if ( empty( $exclude_set ) ) {
-                global $wpdb;
-                $table_name = $wpdb->prefix . 'wp2static_log';
-                $log_entry = $wpdb->get_var(
-                    "SELECT message FROM $table_name 
-                     WHERE message LIKE 'Profile run detected (%)%' 
-                     ORDER BY id DESC LIMIT 1"
-                );
-                if ( $log_entry ) {
-                    preg_match( '/Profile run detected \(([^)]+)\)/', $log_entry, $matches );
-                    if ( isset( $matches[1] ) ) {
-                        $exclude_set = $matches[1];
-                        $this->verboseLog( "Filter profile '$exclude_set' detected from recent log entry." );
-                    }
-                }
-            }
-
-            if ( ! empty( $exclude_set ) ) {
-                $this->verboseLog( "Filter profile '$exclude_set' detected for this run." );
-            }
-
-            $this->deployViaGit( $processed_site_path, $exclude_set );
+            $this->deployViaGit( $processed_site_path );
 
             WsLog::l( 'GitLab Private deployment completed' );
         } catch ( \Exception $e ) {
             WsLog::l( 'GitLab Private deployment failed: ' . $e->getMessage() );
             throw $e;
+        } finally {
+            delete_option( 'wp2static_active_filter_set' );
         }
     }
 
-    private function deployViaGit( string $processed_site_path, string $exclude_set = '' ) : void {
+    private function deployViaGit( string $processed_site_path ) : void {
         $settings = $this->getSettings();
         $project = $this->fetchProjectInfo( $settings['url'], $settings['project_id'], $settings['token'] );
         if ( empty( $project['http_url_to_repo'] ) ) {
@@ -303,8 +265,9 @@ class GitLabPrivateDeployer {
 
         $do_cleanup = (bool) get_option( 'wp2static_gitlab_private_delete_orphaned_files', false );
         if ( $do_cleanup ) {
-            if ( ! empty( $exclude_set ) ) {
-                WsLog::l( "[GITLAB_PRIVATE] Filter profile '$exclude_set' is active. Skipping orphaned file deletion to prevent accidental data loss." );
+            $active_filter = get_option( 'wp2static_active_filter_set' );
+            if ( ! empty( $active_filter ) ) {
+                WsLog::l( "[GITLAB_PRIVATE] Filter profile '$active_filter' is active. Skipping orphaned file deletion to prevent accidental data loss." );
             } else {
                 $this->deleteDirectoryContents( $target_root );
             }
