@@ -280,7 +280,13 @@ class GitLabPrivateDeployer {
         }
 
         // Commit and push
-        $this->runCmd( [ 'git', '-C', $repo_dir, 'add', '-A' ], $mask );
+        if ( ! empty( $active_filter ) ) {
+            // If filtering, only stage new/modified files, NOT deletions
+            $this->runCmd( [ 'git', '-C', $repo_dir, 'add', '.' ], $mask );
+        } else {
+            $this->runCmd( [ 'git', '-C', $repo_dir, 'add', '-A' ], $mask );
+        }
+
         $commit_message = get_option( 'wp2static_gitlab_private_commit_message', 'Deploy static site from WP2Static' );
         $message = $commit_message;
         if ( is_int( $copied ) && $copied > 0 ) { $message .= ' (' . $copied . ' files)'; }
