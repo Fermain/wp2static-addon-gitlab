@@ -291,7 +291,12 @@ class GitLabPrivateDeployer {
 
         $commit_message = get_option( 'wp2static_gitlab_private_commit_message', 'Deploy static site from WP2Static' );
         $message = $commit_message;
-        if ( is_int( $copied ) && $copied > 0 ) { $message .= ' (' . $copied . ' files)'; }
+        $staged = $this->runCmd( [ 'git', '-C', $repo_dir, 'diff', '--cached', '--name-only' ], $mask, false );
+        $staged_count = 0;
+        if ( $staged['code'] === 0 && trim( $staged['out'] ) !== '' ) {
+            $staged_count = count( array_filter( explode( "\n", trim( $staged['out'] ) ) ) );
+        }
+        if ( $staged_count > 0 ) { $message .= ' (' . $staged_count . ' files)'; }
         $commit = $this->runCmd( [ 'git', '-C', $repo_dir, 'commit', '-m', $message, '--author=' . $author_name . ' <' . $author_email . '>' ], $mask, false );
         $nothingToCommit = ( strpos( $commit['out'], 'nothing to commit' ) !== false );
 
