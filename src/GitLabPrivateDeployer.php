@@ -197,7 +197,8 @@ class GitLabPrivateDeployer {
         $settings = $this->getSettings();
         $project = $this->fetchProjectInfo( $settings['url'], $settings['project_id'], $settings['token'] );
         if ( empty( $project['http_url_to_repo'] ) ) {
-            throw new \Exception( 'Project repo URL missing from GitLab response' );
+            $keys = implode( ', ', array_keys( $project ) );
+            throw new \Exception( 'Project repo URL missing from GitLab response (keys present: ' . $keys . ')' );
         }
 
         $remote = $this->buildRemoteUrlWithToken( $project['http_url_to_repo'], $settings['token'] );
@@ -353,12 +354,17 @@ class GitLabPrivateDeployer {
         $res = wp_remote_get( $api, $args );
         $code = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
         if ( $code < 200 || $code >= 300 ) {
-            // Fallback to PRIVATE-TOKEN header
             $args2 = [ 'headers' => [ 'PRIVATE-TOKEN' => $token ], 'timeout' => 30 ];
             $res = wp_remote_get( $api, $args2 );
+            $code = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
         }
         if ( is_wp_error( $res ) ) {
-            throw new \Exception( $res->get_error_message() );
+            throw new \Exception( 'GitLab API request failed: ' . $res->get_error_message() );
+        }
+        if ( $code < 200 || $code >= 300 ) {
+            $decoded = json_decode( wp_remote_retrieve_body( $res ), true );
+            $detail = is_array( $decoded ) && isset( $decoded['message'] ) ? $decoded['message'] : wp_remote_retrieve_body( $res );
+            throw new \Exception( 'GitLab API returned HTTP ' . $code . ' for project "' . $project_id . '": ' . $detail );
         }
         $body = json_decode( wp_remote_retrieve_body( $res ), true );
         return is_array( $body ) ? $body : [];
