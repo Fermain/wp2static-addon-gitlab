@@ -111,7 +111,7 @@ class GitLabPrivateDeployer {
             ];
             $response = wp_remote_get( $api_url, $args_bearer );
             $response_code = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
-            if ( $response_code === 401 || $response_code === 403 || $response_code === 0 ) {
+            if ( $response_code < 200 || $response_code >= 300 ) {
                 $args_private = [
                     'headers' => [ 'PRIVATE-TOKEN' => $access_token ],
                     'timeout' => $connection_timeout,
@@ -150,7 +150,7 @@ class GitLabPrivateDeployer {
                     $type = 'warning';
                 }
             } else {
-                $message = 'Connection failed (HTTP ' . $response_code . ')';
+                $message = 'Connection failed (HTTP ' . $response_code . ') — URL: ' . $api_url;
                 $type = 'error';
             }
 
