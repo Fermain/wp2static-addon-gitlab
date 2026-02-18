@@ -105,25 +105,28 @@ class GitLabPrivateDeployer {
             
             $connection_timeout = 30;
             
+            WsLog::l( 'GitLab connection test URL: ' . $api_url );
+
             $args_bearer = [
                 'headers' => [ 'Authorization' => 'Bearer ' . $access_token ],
                 'timeout' => $connection_timeout,
             ];
             $response = wp_remote_get( $api_url, $args_bearer );
             $response_code = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+            WsLog::l( 'GitLab connection test: Bearer auth returned HTTP ' . $response_code );
             if ( $response_code < 200 || $response_code >= 300 ) {
                 $args_private = [
                     'headers' => [ 'PRIVATE-TOKEN' => $access_token ],
                     'timeout' => $connection_timeout,
                 ];
                 $response = wp_remote_get( $api_url, $args_private );
+                $response_code = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+                WsLog::l( 'GitLab connection test: PRIVATE-TOKEN auth returned HTTP ' . $response_code );
             }
 
             if ( is_wp_error( $response ) ) {
                 throw new \Exception( 'Connection failed: ' . $response->get_error_message() );
             }
-
-            $response_code = wp_remote_retrieve_response_code( $response );
             
             if ( $response_code === 200 ) {
                 $project_data = json_decode( wp_remote_retrieve_body( $response ), true );
