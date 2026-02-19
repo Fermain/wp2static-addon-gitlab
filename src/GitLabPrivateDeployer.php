@@ -347,21 +347,34 @@ class GitLabPrivateDeployer {
         ];
     }
 
-    public function bypassProxy( $handle ) : void {
-        curl_setopt( $handle, CURLOPT_PROXY, '' );
-        curl_setopt( $handle, CURLOPT_NOPROXY, '*' );
-        $this->verboseLog( 'GitLab: proxy bypass applied to cURL handle' );
-    }
-
     private function wpRemoteGet( string $url, array $args ) {
-        add_action( 'http_api_curl', [ $this, 'bypassProxy' ] );
+        $verbose_tmp = tmpfile();
+        $bypass = function( $handle ) use ( $verbose_tmp ) {
+            curl_setopt( $handle, CURLOPT_PROXY, '' );
+            curl_setopt( $handle, CURLOPT_NOPROXY, '*' );
+            if ( $verbose_tmp ) {
+                curl_setopt( $handle, CURLOPT_VERBOSE, true );
+                curl_setopt( $handle, CURLOPT_STDERR, $verbose_tmp );
+            }
+            $this->verboseLog( 'GitLab: proxy bypass applied to cURL handle' );
+        };
+        add_action( 'http_api_curl', $bypass, 9999 );
         $args['reject_unsafe_urls'] = false;
+        $args['httpversion']        = '1.1';
         $response = wp_remote_get( $url, $args );
-        remove_action( 'http_api_curl', [ $this, 'bypassProxy' ] );
+        remove_action( 'http_api_curl', $bypass, 9999 );
+        if ( $verbose_tmp ) {
+            rewind( $verbose_tmp );
+            $verbose_log = stream_get_contents( $verbose_tmp );
+            fclose( $verbose_tmp );
+            if ( $verbose_log ) {
+                WsLog::l( 'GitLab cURL verbose: ' . $verbose_log );
+            }
+        }
         if ( ! is_wp_error( $response ) ) {
-            $this->verboseLog( 'GitLab wpRemoteGet transport: cURL bypass active, HTTP ' . wp_remote_retrieve_response_code( $response ) );
+            $this->verboseLog( 'GitLab wpRemoteGet HTTP ' . wp_remote_retrieve_response_code( $response ) );
         } else {
-            $this->verboseLog( 'GitLab wpRemoteGet WP_Error: ' . $response->get_error_message() );
+            WsLog::l( 'GitLab wpRemoteGet WP_Error: ' . $response->get_error_message() );
         }
         return $response;
     }
