@@ -101,27 +101,23 @@ class GitLabPrivateDeployer {
                 throw new \Exception( 'Missing required configuration' );
             }
 
-            $api_url = $gitlab_url . '/api/v4/projects/' . urlencode( $project_id );
+            $api_url = rtrim( $gitlab_url, '/' ) . '/api/v4/projects/' . rawurlencode( $project_id );
             
             $connection_timeout = 30;
-            
-            WsLog::l( 'GitLab connection test URL: ' . $api_url );
 
             $args_bearer = [
                 'headers' => [ 'Authorization' => 'Bearer ' . $access_token ],
                 'timeout' => $connection_timeout,
             ];
-            $response = wp_remote_get( $api_url, $args_bearer );
+            $response = $this->wpRemoteGet( $api_url, $args_bearer );
             $response_code = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
-            WsLog::l( 'GitLab connection test: Bearer auth returned HTTP ' . $response_code );
             if ( $response_code < 200 || $response_code >= 300 ) {
                 $args_private = [
                     'headers' => [ 'PRIVATE-TOKEN' => $access_token ],
                     'timeout' => $connection_timeout,
                 ];
-                $response = wp_remote_get( $api_url, $args_private );
+                $response = $this->wpRemoteGet( $api_url, $args_private );
                 $response_code = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
-                WsLog::l( 'GitLab connection test: PRIVATE-TOKEN auth returned HTTP ' . $response_code );
             }
 
             if ( is_wp_error( $response ) ) {
@@ -351,15 +347,28 @@ class GitLabPrivateDeployer {
         ];
     }
 
+    public function bypassProxy( $handle ) : void {
+        curl_setopt( $handle, CURLOPT_PROXY, '' );
+    }
+
+    private function wpRemoteGet( string $url, array $args ) {
+        add_action( 'http_api_curl', [ $this, 'bypassProxy' ] );
+        $response = wp_remote_get( $url, $args );
+        remove_action( 'http_api_curl', [ $this, 'bypassProxy' ] );
+        return $response;
+    }
+
     private function fetchProjectInfo( string $base_url, string $project_id, string $token ) : array {
         $api = $base_url . '/api/v4/projects/' . rawurlencode( $project_id );
+        WsLog::l( 'GitLab fetchProjectInfo URL: ' . $api );
         $args = [ 'headers' => [ 'Authorization' => 'Bearer ' . $token ], 'timeout' => 30 ];
-        $res = wp_remote_get( $api, $args );
+        $res = $this->wpRemoteGet( $api, $args );
         $code = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
         if ( $code < 200 || $code >= 300 ) {
             $args2 = [ 'headers' => [ 'PRIVATE-TOKEN' => $token ], 'timeout' => 30 ];
-            $res = wp_remote_get( $api, $args2 );
+            $res = $this->wpRemoteGet( $api, $args2 );
             $code = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
+                $code = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
         }
         if ( is_wp_error( $res ) ) {
             throw new \Exception( 'GitLab API request failed: ' . $res->get_error_message() );
