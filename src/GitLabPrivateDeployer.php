@@ -349,12 +349,20 @@ class GitLabPrivateDeployer {
 
     public function bypassProxy( $handle ) : void {
         curl_setopt( $handle, CURLOPT_PROXY, '' );
+        curl_setopt( $handle, CURLOPT_NOPROXY, '*' );
+        $this->verboseLog( 'GitLab: proxy bypass applied to cURL handle' );
     }
 
     private function wpRemoteGet( string $url, array $args ) {
         add_action( 'http_api_curl', [ $this, 'bypassProxy' ] );
+        $args['reject_unsafe_urls'] = false;
         $response = wp_remote_get( $url, $args );
         remove_action( 'http_api_curl', [ $this, 'bypassProxy' ] );
+        if ( ! is_wp_error( $response ) ) {
+            $this->verboseLog( 'GitLab wpRemoteGet transport: cURL bypass active, HTTP ' . wp_remote_retrieve_response_code( $response ) );
+        } else {
+            $this->verboseLog( 'GitLab wpRemoteGet WP_Error: ' . $response->get_error_message() );
+        }
         return $response;
     }
 
