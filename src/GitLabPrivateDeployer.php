@@ -31,7 +31,6 @@ class GitLabPrivateDeployer {
     }
 
     public function renderOptionsPage() : void {
-        // Get options using WordPress built-in functions
         $options = [
             'gitlabUrl' => get_option( 'wp2static_gitlab_private_url', 'https://gitlab.com' ),
             'gitlabProjectId' => get_option( 'wp2static_gitlab_private_project_id', '' ),
@@ -56,14 +55,11 @@ class GitLabPrivateDeployer {
 
         check_admin_referer( 'wp2static-gitlab-private-options' );
 
-        // Save options using WordPress built-in functions
         update_option( 'wp2static_gitlab_private_url', esc_url_raw( rtrim( sanitize_text_field( $_POST['gitlabUrl'] ?? '' ), '/' ) ) );
         update_option( 'wp2static_gitlab_private_project_id', sanitize_text_field( $_POST['gitlabProjectId'] ?? '' ) );
         update_option( 'wp2static_gitlab_private_access_token', sanitize_text_field( $_POST['gitlabAccessToken'] ?? '' ) );
         update_option( 'wp2static_gitlab_private_branch', sanitize_text_field( $_POST['gitlabBranch'] ?? '' ) );
-        $deploy_subdir = sanitize_text_field( $_POST['gitlabDeploySubdir'] ?? '' );
-        $deploy_subdir = trim( $deploy_subdir );
-        $deploy_subdir = trim( $deploy_subdir, "/\t\n\r\0\x0B" );
+        $deploy_subdir = trim( sanitize_text_field( $_POST['gitlabDeploySubdir'] ?? '' ), '/' );
         if ( $deploy_subdir === '' ) { $deploy_subdir = 'public'; }
         update_option( 'wp2static_gitlab_private_deploy_subdir', $deploy_subdir );
         update_option( 'wp2static_gitlab_private_commit_message', sanitize_text_field( $_POST['gitlabCommitMessage'] ?? '' ) );
@@ -196,8 +192,7 @@ class GitLabPrivateDeployer {
         $settings = $this->getSettings();
         $project = $this->fetchProjectInfo( $settings['url'], $settings['project_id'], $settings['token'] );
         if ( empty( $project['http_url_to_repo'] ) ) {
-            $keys = implode( ', ', array_keys( $project ) );
-            throw new \Exception( 'Project repo URL missing from GitLab response (keys present: ' . $keys . ')' );
+            throw new \Exception( 'Project repo URL missing from GitLab response' );
         }
 
         $remote = $this->buildRemoteUrlWithToken( $project['http_url_to_repo'], $settings['token'] );
@@ -347,41 +342,47 @@ class GitLabPrivateDeployer {
         ];
     }
 
+    /**
+     * Wrapper around wp_remote_get that guards two environment-specific hazards:
+     *
+     * 1. Other plugins injecting their own auth headers via http_request_args (e.g. a
+     *    GitLab theme updater that blanket-adds PRIVATE-TOKEN to all GitLab-host requests).
+     *    We enforce our intended auth headers last so they cannot be overridden.
+     *
+     * 2. An HTTPS_PROXY environment variable being picked up by PHP's cURL at the OS level,
+     *    which routes requests through a proxy that strips auth headers. WordPress's own proxy
+     *    bypass constants do not cover env-var proxies; setting CURLOPT_PROXY explicitly does.
+     */
     private function wpRemoteGet( string $url, array $args ) {
-        $verbose_tmp = tmpfile();
-        $bypass = function( $handle ) use ( $verbose_tmp ) {
+        $auth_headers = $args['headers'] ?? [];
+
+        $enforce_auth = function( $r ) use ( $auth_headers ) {
+            unset( $r['headers']['Authorization'], $r['headers']['PRIVATE-TOKEN'] );
+            foreach ( $auth_headers as $k => $v ) {
+                $r['headers'][ $k ] = $v;
+            }
+            return $r;
+        };
+
+        $bypass_proxy = function( $handle ) {
             curl_setopt( $handle, CURLOPT_PROXY, '' );
             curl_setopt( $handle, CURLOPT_NOPROXY, '*' );
-            if ( $verbose_tmp ) {
-                curl_setopt( $handle, CURLOPT_VERBOSE, true );
-                curl_setopt( $handle, CURLOPT_STDERR, $verbose_tmp );
-            }
-            $this->verboseLog( 'GitLab: proxy bypass applied to cURL handle' );
         };
-        add_action( 'http_api_curl', $bypass, 9999 );
-        $args['reject_unsafe_urls'] = false;
-        $args['httpversion']        = '1.1';
+
+        add_filter( 'http_request_args', $enforce_auth, 9999 );
+        add_action( 'http_api_curl', $bypass_proxy, 9999 );
+
         $response = wp_remote_get( $url, $args );
-        remove_action( 'http_api_curl', $bypass, 9999 );
-        if ( $verbose_tmp ) {
-            rewind( $verbose_tmp );
-            $verbose_log = stream_get_contents( $verbose_tmp );
-            fclose( $verbose_tmp );
-            if ( $verbose_log ) {
-                WsLog::l( 'GitLab cURL verbose: ' . $verbose_log );
-            }
-        }
-        if ( ! is_wp_error( $response ) ) {
-            $this->verboseLog( 'GitLab wpRemoteGet HTTP ' . wp_remote_retrieve_response_code( $response ) );
-        } else {
-            WsLog::l( 'GitLab wpRemoteGet WP_Error: ' . $response->get_error_message() );
-        }
+
+        remove_filter( 'http_request_args', $enforce_auth, 9999 );
+        remove_action( 'http_api_curl', $bypass_proxy, 9999 );
+
         return $response;
     }
 
     private function fetchProjectInfo( string $base_url, string $project_id, string $token ) : array {
         $api = $base_url . '/api/v4/projects/' . rawurlencode( $project_id );
-        WsLog::l( 'GitLab fetchProjectInfo URL: ' . $api );
+        $this->verboseLog( 'GitLab fetchProjectInfo URL: ' . $api );
         $args = [ 'headers' => [ 'Authorization' => 'Bearer ' . $token ], 'timeout' => 30 ];
         $res = $this->wpRemoteGet( $api, $args );
         $code = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
@@ -389,7 +390,6 @@ class GitLabPrivateDeployer {
             $args2 = [ 'headers' => [ 'PRIVATE-TOKEN' => $token ], 'timeout' => 30 ];
             $res = $this->wpRemoteGet( $api, $args2 );
             $code = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
-                $code = is_wp_error( $res ) ? 0 : (int) wp_remote_retrieve_response_code( $res );
         }
         if ( is_wp_error( $res ) ) {
             throw new \Exception( 'GitLab API request failed: ' . $res->get_error_message() );
